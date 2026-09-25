@@ -1,0 +1,44 @@
+{
+  "name": "betelgeuz",
+  "displayName": "Betelgeuz",
+  "description": "Betelgeuz VS Code extension.",
+  "version": "0.0.1",
+  "publisher": "betelgeuz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/betelgeuz/betelgeuz"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:betelgeuz.helloWorld"
+  ],
+  "main": "./out/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "betelgeuz.helloWorld",
+        "title": "Betelgeuz: Hello World"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -p ./ --watch",
+    "check": "tsc -p ./ --noEmit",
+    "package": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.95.0",
+    "typescript": "^5.7.2"
+  }
+}
