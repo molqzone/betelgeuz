@@ -11,7 +11,7 @@ everything else is kept coherent.
 | `docs/PLAN.md` | architecture + decision record (the *why*) | updated when a decision or contract changes; section text is normative, §12 is the decision log with triggers |
 | `docs/dev/*.md` | living developer guides (the *how*) | one audience, one task per document; short; changed in the same commit as the code |
 | `docs/ERRORS.md` | generated from common core and strategy error definitions | never hand-edited (`cargo xtask gen-errors`) |
-| `docs/protocol.md`, `schemas/protocol/`, `schemas/strategies/` | generated from protocol and strategy contracts | never hand-edited (`cargo xtask gen-schema`) |
+| `docs/protocol.md` | generated protocol reference (JSON Schema files are build artifacts under `target/schema/`, not repository content) | never hand-edited (`cargo xtask gen-schema`) |
 | `editors/code/src/protocol.ts` | generated from protocol and strategy JSON Schemas | never hand-edited (`cargo xtask gen-ts`) |
 | `README.md` | entry point | links outward; never duplicates content that lives elsewhere |
 | crate/module rustdoc | contract summary at each boundary | every crate's `lib.rs` states what it owns and what it forbids; `TODO(Phase X)` markers tie code to plan phases |

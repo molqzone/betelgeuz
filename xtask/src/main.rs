@@ -33,7 +33,7 @@ fn workspace_root() -> PathBuf {
 /// JSON Schema and protocol reference derived from the protocol crate.
 fn gen_schema(check: bool) {
     let root = workspace_root();
-    let schema_dir = root.join("schemas").join("protocol");
+    let schema_dir = root.join("target").join("schema").join("protocol");
     std::fs::create_dir_all(&schema_dir).expect("create protocol schema directory");
     let schemas = protocol_schemas();
     validate_method_contracts(&schemas);
@@ -43,16 +43,16 @@ fn gen_schema(check: bool) {
             "{}\n",
             serde_json::to_string_pretty(schema).expect("schema serializes")
         );
-        write_generated(&path, &content, check);
+        write_generated(&path, &content, false);
     }
 
-    let strategy_schema_dir = root.join("schemas").join("strategies");
+    let strategy_schema_dir = root.join("target").join("schema").join("strategies");
     std::fs::create_dir_all(&strategy_schema_dir).expect("create strategy schema directory");
     let strategy_schemas = strategy::builtin_config_schemas();
     for (id, schema) in &strategy_schemas {
         let path = strategy_schema_dir.join(format!("{id}.json"));
         let content = format!("{}\n", serde_json::to_string_pretty(schema).unwrap());
-        write_generated(&path, &content, check);
+        write_generated(&path, &content, false);
     }
 
     let mut doc = String::from(
@@ -95,15 +95,7 @@ fn gen_schema(check: bool) {
         let full_key = protocol::config::strategy_key(key.strategy_id, key.name);
         doc.push_str(&format!("- `{full_key}`\n"));
     }
-    for (id, _) in &strategy_schemas {
-        doc.push_str(&format!(
-            "- Schema: [`{id}`](../schemas/strategies/{id}.json)\n"
-        ));
-    }
-    doc.push_str("\n## JSON Schema\n\n");
-    for (name, _) in &schemas {
-        doc.push_str(&format!("- [`{name}`](../schemas/protocol/{name}.json)\n"));
-    }
+    doc.push_str("\nGenerated JSON Schemas are build artifacts under `target/schema/`, published only when a third-party frontend consumes them.\n");
 
     let doc_path = root.join("docs").join("protocol.md");
     write_generated(&doc_path, &doc, check);
