@@ -11,11 +11,14 @@ use std::{
 
 use async_trait::async_trait;
 use errors::{BetelgeuzError, ErrorCode};
-use tokio::{io::AsyncReadExt, sync::broadcast};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{broadcast, mpsc, oneshot},
+};
 
 use crate::{
-    ExecChannel, ExecEvent, ExecRequest, HostKeyFingerprint, PortForward, RemoteFileInfo,
-    SessionEvent, SshConnectOptions, SshEndpoint, SshSession, SshTransport,
+    ExecEvent, ExecHandle, ExecRequest, ForwardHandle, HostKeyFingerprint, RemoteFileInfo,
+    SessionEvent, SshConnectOptions, SshEndpoint, SshTransport,
 };
 
 const DEFAULT_HOST_KEY: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -79,6 +82,14 @@ impl FakeSshTransport {
             detail: detail.into(),
         });
     }
+
+    fn ensure_connected(&self) -> Result<(), BetelgeuzError> {
+        if self.state.connected.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(BetelgeuzError::new(ErrorCode::SshLost))
+        }
+    }
 }
 
 impl Default for FakeSshTransport {
@@ -96,10 +107,7 @@ impl SshTransport for FakeSshTransport {
         Ok(self.state.host_key.lock().unwrap().clone())
     }
 
-    async fn connect(
-        &self,
-        options: SshConnectOptions,
-    ) -> Result<Box<dyn SshSession>, BetelgeuzError> {
+    async fn connect(&self, options: SshConnectOptions) -> Result<(), BetelgeuzError> {
         if self.state.connect_failure.load(Ordering::Relaxed) {
             return Err(BetelgeuzError::new(ErrorCode::SshUnreachable));
         }
@@ -109,33 +117,14 @@ impl SshTransport for FakeSshTransport {
         }
 
         self.state.connected.store(true, Ordering::Relaxed);
-        Ok(Box::new(FakeSshSession {
-            state: Arc::clone(&self.state),
-        }))
+        Ok(())
     }
-}
 
-struct FakeSshSession {
-    state: Arc<FakeState>,
-}
-
-impl FakeSshSession {
-    fn ensure_connected(&self) -> Result<(), BetelgeuzError> {
-        if self.state.connected.load(Ordering::Relaxed) {
-            Ok(())
-        } else {
-            Err(BetelgeuzError::new(ErrorCode::SshLost))
-        }
-    }
-}
-
-#[async_trait]
-impl SshSession for FakeSshSession {
     fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
         self.state.events.subscribe()
     }
 
-    async fn exec(&self, request: ExecRequest) -> Result<Box<dyn ExecChannel>, BetelgeuzError> {
+    async fn exec(&self, request: ExecRequest) -> Result<ExecHandle, BetelgeuzError> {
         self.ensure_connected()?;
         let events = self
             .state
@@ -145,11 +134,24 @@ impl SshSession for FakeSshSession {
             .get(&request.command)
             .cloned()
             .unwrap_or_default();
-        Ok(Box::new(FakeExecChannel {
-            events: events.into(),
-            terminated: false,
-            termination_reported: false,
-        }))
+        let (sender, receiver) = mpsc::channel(16);
+        let (terminate, termination) = oneshot::channel();
+        tokio::spawn(async move {
+            for event in events {
+                if sender.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+            if termination.await.is_ok() {
+                let _ = sender
+                    .send(Ok(ExecEvent::Exit {
+                        status: None,
+                        signal: Some("TERM".into()),
+                    }))
+                    .await;
+            }
+        });
+        Ok(ExecHandle::new(receiver, Some(terminate)))
     }
 
     async fn upload(
@@ -206,66 +208,21 @@ impl SshSession for FakeSshSession {
         &self,
         _remote_host: &str,
         remote_port: u16,
-    ) -> Result<Box<dyn PortForward>, BetelgeuzError> {
+    ) -> Result<ForwardHandle, BetelgeuzError> {
         self.ensure_connected()?;
         if remote_port == 0 {
             return Err(BetelgeuzError::new(ErrorCode::ConfigInvalid)
                 .with_detail("forward target port must be non-zero"));
         }
         let local_port = self.state.next_forward_port.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(FakePortForward {
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), local_port),
-            closed: false,
-        }))
+        Ok(ForwardHandle::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), local_port),
+            None,
+        ))
     }
 
     async fn close(&self) -> Result<(), BetelgeuzError> {
         self.state.connected.store(false, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-struct FakeExecChannel {
-    events: std::collections::VecDeque<ExecEvent>,
-    terminated: bool,
-    termination_reported: bool,
-}
-
-#[async_trait]
-impl ExecChannel for FakeExecChannel {
-    async fn next_event(&mut self) -> Result<Option<ExecEvent>, BetelgeuzError> {
-        if let Some(event) = self.events.pop_front() {
-            return Ok(Some(event));
-        }
-        if self.terminated && !self.termination_reported {
-            self.termination_reported = true;
-            return Ok(Some(ExecEvent::Exit {
-                status: None,
-                signal: Some("TERM".into()),
-            }));
-        }
-        Ok(None)
-    }
-
-    async fn terminate(&mut self) -> Result<(), BetelgeuzError> {
-        self.terminated = true;
-        Ok(())
-    }
-}
-
-struct FakePortForward {
-    local_addr: SocketAddr,
-    closed: bool,
-}
-
-#[async_trait]
-impl PortForward for FakePortForward {
-    fn local_addr(&self) -> SocketAddr {
-        self.local_addr
-    }
-
-    async fn close(&mut self) -> Result<(), BetelgeuzError> {
-        self.closed = true;
         Ok(())
     }
 }
@@ -303,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn supports_streaming_exec_and_atomic_file_operations() {
         let transport = FakeSshTransport::new();
-        let session = transport
+        transport
             .connect(connect_options(DEFAULT_HOST_KEY))
             .await
             .unwrap();
@@ -320,7 +277,7 @@ mod tests {
                 },
             ],
         );
-        let mut command = session
+        let mut command = transport
             .exec(ExecRequest {
                 command: "fixed-launcher".into(),
                 allocate_pty: false,
@@ -340,8 +297,8 @@ mod tests {
         ));
 
         let mut source: &[u8] = b"firmware";
-        session.upload(&mut source, "/tmp/stage.elf").await.unwrap();
-        session
+        transport.upload(&mut source, "/tmp/stage.elf").await.unwrap();
+        transport
             .rename("/tmp/stage.elf", "/lib/firmware/app.elf")
             .await
             .unwrap();
@@ -349,6 +306,6 @@ mod tests {
             transport.remote_file("/lib/firmware/app.elf").as_deref(),
             Some(&b"firmware"[..])
         );
-        assert!(session.metadata("/tmp/stage.elf").await.unwrap().is_none());
+        assert!(transport.metadata("/tmp/stage.elf").await.unwrap().is_none());
     }
 }

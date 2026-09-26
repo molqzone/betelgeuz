@@ -1,16 +1,23 @@
 //! SSH session API shared by core services and deploy strategies.
 //!
 //! The core owns profile resolution, credential lookup, and reconnect policy.
-//! This crate verifies the pinned server key before returning a session and
-//! provides independent exec, SFTP, and port-forward channels over that one
-//! session. The planned production implementation is `russh`; the fake is available
-//! only to tests and test utilities.
+//! This crate verifies the pinned server key before returning a connected
+//! session and provides exec, SFTP, and port-forward channels over that one
+//! session. The planned production implementation is `russh`; the fake is
+//! available only to tests and test utilities.
+//!
+//! Abstraction policy: one trait today. It grows, and may split into more
+//! focused traits, only when a second implementation or real concurrency
+//! forces it.
 
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
 use errors::{BetelgeuzError, ErrorCode};
-use tokio::{io::AsyncRead, sync::broadcast};
+use tokio::{
+    io::AsyncRead,
+    sync::{broadcast, mpsc, oneshot},
+};
 use zeroize::Zeroize;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -140,6 +147,70 @@ pub enum SessionEvent {
     Disconnected { detail: String },
 }
 
+/// Streaming result of one exec command. The event stream ends after the exit
+/// event; dropping the handle detaches from the remote command.
+pub struct ExecHandle {
+    events: mpsc::Receiver<Result<ExecEvent, BetelgeuzError>>,
+    terminate: Option<oneshot::Sender<()>>,
+}
+
+impl ExecHandle {
+    /// For implementations of [`SshTransport`].
+    pub fn new(
+        events: mpsc::Receiver<Result<ExecEvent, BetelgeuzError>>,
+        terminate: Option<oneshot::Sender<()>>,
+    ) -> Self {
+        Self {
+            events,
+            terminate,
+        }
+    }
+
+    pub async fn next_event(&mut self) -> Result<Option<ExecEvent>, BetelgeuzError> {
+        match self.events.recv().await {
+            None => Ok(None),
+            Some(Ok(event)) => Ok(Some(event)),
+            Some(Err(error)) => Err(error),
+        }
+    }
+
+    /// Requests termination; the terminating signal arrives as the final exit
+    /// event when the implementation observes it.
+    pub async fn terminate(&mut self) -> Result<(), BetelgeuzError> {
+        if let Some(terminate) = self.terminate.take() {
+            let _ = terminate.send(());
+        }
+        Ok(())
+    }
+}
+
+/// One local listener forwarded through the SSH session.
+pub struct ForwardHandle {
+    local_addr: SocketAddr,
+    close: Option<oneshot::Sender<()>>,
+}
+
+impl ForwardHandle {
+    /// For implementations of [`SshTransport`].
+    pub fn new(local_addr: SocketAddr, close: Option<oneshot::Sender<()>>) -> Self {
+        Self { local_addr, close }
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub async fn close(&mut self) -> Result<(), BetelgeuzError> {
+        if let Some(close) = self.close.take() {
+            let _ = close.send(());
+        }
+        Ok(())
+    }
+}
+
+/// One connected SSH session. `connect` is part of the same object so the core
+/// holds exactly one transport per session; connection-loss events arrive on
+/// `subscribe`, and reconnect attempts are owned by the core.
 #[async_trait]
 pub trait SshTransport: Send + Sync {
     /// Reads the server key only. The caller must obtain explicit user
@@ -149,20 +220,15 @@ pub trait SshTransport: Send + Sync {
         endpoint: &SshEndpoint,
     ) -> Result<HostKeyFingerprint, BetelgeuzError>;
 
-    /// Opens a session only after the server key matches `host_key_pin`.
-    async fn connect(
-        &self,
-        options: SshConnectOptions,
-    ) -> Result<Box<dyn SshSession>, BetelgeuzError>;
-}
+    /// Establishes the session only after the server key matches
+    /// `host_key_pin`.
+    async fn connect(&self, options: SshConnectOptions) -> Result<(), BetelgeuzError>;
 
-#[async_trait]
-pub trait SshSession: Send + Sync {
-    /// Receives connection-loss events. Reconnect attempts are owned by core.
+    /// Receives connection-loss events.
     fn subscribe(&self) -> broadcast::Receiver<SessionEvent>;
 
     /// Opens a dedicated exec channel on this SSH session.
-    async fn exec(&self, request: ExecRequest) -> Result<Box<dyn ExecChannel>, BetelgeuzError>;
+    async fn exec(&self, request: ExecRequest) -> Result<ExecHandle, BetelgeuzError>;
 
     /// Uploads through SFTP from a host-side stream, without buffering the
     /// entire artifact in memory.
@@ -181,19 +247,7 @@ pub trait SshSession: Send + Sync {
         &self,
         remote_host: &str,
         remote_port: u16,
-    ) -> Result<Box<dyn PortForward>, BetelgeuzError>;
+    ) -> Result<ForwardHandle, BetelgeuzError>;
 
     async fn close(&self) -> Result<(), BetelgeuzError>;
-}
-
-#[async_trait]
-pub trait ExecChannel: Send {
-    async fn next_event(&mut self) -> Result<Option<ExecEvent>, BetelgeuzError>;
-    async fn terminate(&mut self) -> Result<(), BetelgeuzError>;
-}
-
-#[async_trait]
-pub trait PortForward: Send {
-    fn local_addr(&self) -> SocketAddr;
-    async fn close(&mut self) -> Result<(), BetelgeuzError>;
 }
