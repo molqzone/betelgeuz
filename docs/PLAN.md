@@ -480,7 +480,7 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Build and package `betelgeuz-core` for the supported host platforms: win32-x64 and linux-x64 first, extending the matrix as needed.
 - Let the VS Code adapter start, monitor, and shut down the core child process.
 - Add protocol version negotiation, request cancellation, structured errors, and crash/restart handling.
-- Keep the core usable from a standalone CLI harness before adding full VS Code UI commands.
+- Keep the core scriptable over stdio JSON-RPC from the start: a shell pipe is the early harness, and a product CLI frontend is deferred until a scripting or CI consumer exists.
 
 ### Phase 1: SSH profile MVP
 
@@ -701,3 +701,4 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Dynamic strategy loading: third-party strategies as loadable modules or WASM components. Trigger: strategy demand beyond the core's own implementations. The registry metadata is the seam; the MVP registry is compile-time.
 - Multi-file deploy: deploying an application together with shared libraries or configuration files as one operation. Trigger: a real application workspace that needs several files deployed together. A manifest-style deploy contract would be designed then.
 - Publishing protocol JSON Schema artifacts. Trigger: a third-party frontend or the published `betelgeuz-protocol` facade consumes them. Until then the schemas are build artifacts under `target/schema/`, following rust-analyzer, which keeps only Rust types plus a human-readable protocol reference in the repository.
+- A product CLI frontend. Trigger: a scripting or CI consumer, or an editor without a dedicated adapter, needs one. rust-analyzer's early subcommands were developer diagnostics on the server binary, not a product CLI; the stdio protocol keeps the core scriptable meanwhile.

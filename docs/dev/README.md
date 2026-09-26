@@ -92,11 +92,10 @@ Phase 0 is exploratory: tests protect boundaries and contracts, not coverage.
 ## Naming
 
 - **Workspace crates are short single words** (`protocol`, `errors`, `transport`,
-  `strategy`, `cli`, `xtask`, `betelgeuz`), rust-analyzer style. They are
+  `strategy`, `xtask`, `betelgeuz`), rust-analyzer style. They are
   internal (`publish = false`); if a crate is ever published for third-party
   frontends, it ships under a namespaced name (`betelgeuz-protocol`).
-- **Product binaries keep full names**: `betelgeuz-core` (the headless core)
-  and `betelgeuz` (the CLI harness).
+- **Product binaries keep full names**: `betelgeuz-core` (the headless core).
 - **Names are plain and descriptive.** Prefer what a thing is
   (`deploy pipeline`, `session manager`) over pattern vocabulary; suffixes like
   `Factory` or `Impl` are used only when they mean exactly that.

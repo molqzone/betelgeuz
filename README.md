@@ -9,9 +9,8 @@ crates/
 ├── protocol/     # JSON-RPC wire contract, config & descriptor schemas
 ├── errors/       # common core errors and metadata shared with strategies
 ├── betelgeuz/    # headless core binary `betelgeuz-core`: stdio JSON-RPC server, attach identity, deploy pipeline
-├── transport/    # SshTransport trait, the single russh implementation, test fake
-├── strategy/     # deploy strategy contract, registry (detection predicates), shared pipeline
-└── cli/          # standalone CLI harness, binary `betelgeuz`
+├── transport/    # SshTransport trait and test fake (russh implementation lands in Phase 1)
+├── strategy/     # deploy strategy contract and strategy-owned config keys
 editors/
 └── code/         # VS Code extension (the first frontend adapter)
 xtask/            # cargo xtask: gen-schema / gen-errors / gen-ts / package

@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 /// One-use secret material supplied from frontend protected storage. It is
-/// never persisted with the profile or echoed in protocol results.
-#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// never persisted with the profile or echoed in protocol results. Not
+/// `Clone`: secret copies are created only where a caller explicitly exposes
+/// the value, mirroring `transport::Secret`.
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SensitiveString(String);
 
 impl SensitiveString {
@@ -42,7 +44,7 @@ impl Drop for SensitiveString {
 
 /// The secrets for one credential reference: an account password and/or the
 /// passphrase of a private key.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CredentialMaterial {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,7 +55,7 @@ pub struct CredentialMaterial {
 
 /// One-use values indexed by the profile credential reference. This allows a
 /// target and each typed proxy hop to use different protected credentials.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct CredentialSecrets(pub BTreeMap<String, CredentialMaterial>);
 

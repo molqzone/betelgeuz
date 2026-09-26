@@ -9,9 +9,11 @@ use std::io::{self, BufRead, Write};
 
 use errors::{BetelgeuzError, ErrorCode};
 use protocol::{
+    config::CredentialSecrets,
     error::{RpcError, RpcErrorData},
     methods::{self, AttachRequest, InitializeParams, InitializeResult},
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 use zeroize::Zeroize;
 
@@ -130,14 +132,21 @@ fn parse_attach_request(mut params: Value) -> Result<AttachRequest, String> {
         .and_then(|object| object.remove("credentialSecrets"));
     let credential_secrets = match credentials {
         None | Some(Value::Null) => None,
-        Some(mut value) => {
+        Some(value) => {
+            let mut value = value;
             if !valid_credential_secrets_shape(&value) {
                 zeroize_json(&mut value);
                 return Err(
                     "credentialSecrets must map references to password/passphrase values".into(),
                 );
             }
-            Some(serde_json::from_value(value).map_err(|error| error.to_string())?)
+            // Deserialize by reference so the incoming Value stays owned here
+            // and is zeroized on both paths; `from_value` would drop it
+            // unzeroized when parsing fails.
+            let parsed =
+                CredentialSecrets::deserialize(&value).map_err(|error| error.to_string());
+            zeroize_json(&mut value);
+            Some(parsed?)
         }
     };
     if !valid_attach_shape(&params) {
@@ -179,6 +188,9 @@ fn valid_credential_material_shape(value: &Value) -> bool {
 }
 
 fn zeroize_json(value: &mut Value) {
+    // Recurses only into values: object keys here are non-secret field names
+    // (`credentialRef` and friends). If secret material ever appears in key
+    // position — for example a map keyed by secret — keys must be zeroized too.
     match value {
         Value::String(string) => string.zeroize(),
         Value::Array(items) => items.iter_mut().for_each(zeroize_json),

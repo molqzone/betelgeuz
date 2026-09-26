@@ -6,7 +6,6 @@ members = [
     "crates/betelgeuz",
     "crates/transport",
     "crates/strategy",
-    "crates/cli",
     "xtask",
 ]
 
