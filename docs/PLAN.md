@@ -4,6 +4,8 @@
 
 Develop Betelgeuz as a headless local control core with editor adapters, initially a VS Code extension, for attach-and-deploy embedded Linux development. Lichee RVNano is the sole Tier 1 board; other boards are future support targets. CMake Tools remains the workspace's build owner and produces the selected target artifact; Betelgeuz consumes that existing artifact through the active attach object and manages the target lifecycle. Separate workspaces can use the same flow with different deploy strategies, such as SSH application deployment for a Linux userspace workspace and Linux `remoteproc` for a small-core firmware workspace. The core protocol must also support future Zed, Neovim/Vim, and CLI frontends without duplicating SSH or deployment logic.
 
+North star: Betelgeuz is not a build system, a remote IDE, a board manager, or an SSH frontend. It is a local target-control core that binds an existing build artifact to a verified target through a selected deployment strategy, and owns deployment, target lifecycle, and debug endpoint management for that binding.
+
 The extension must not require VS Code Server on the target board and must not use `Remote - SSH` as its execution model. It may follow the familiar remote-target workflow of remembered profiles, host-key verification, and reconnect behavior; that similarity applies only to connection management, not to running a remote VS Code extension host.
 
 The Microsoft `Remote - SSH` extension is not a Betelgeuz runtime dependency. Its internal resolver and transport implementation do not provide a stable public library API, and reusing them would couple Betelgeuz to the Remote - SSH extension and its VS Code Server workflow. Betelgeuz owns its target profile, authentication settings, host-key pins, and connection policy.
@@ -27,7 +29,7 @@ The Microsoft `Remote - SSH` extension is not a Betelgeuz runtime dependency. It
 - A mockable transport layer so the core behavior can be tested without hardware.
 
 The MVP scope is staged inside the first release: foreground application execution is the
-Phase 1 baseline, while systemd service mode is the optional Phase 2 capability. Acceptance
+Phase 1 baseline, while systemd service mode is the optional Phase 4 capability. Acceptance
 criteria that mention a service are conditional on the target exposing a supported service
 manager and a pre-provisioned unit; a board without one remains a supported foreground-only
 target.
@@ -90,13 +92,13 @@ Target board
   └─ Application or configured strategy runtime
 ```
 
-The SSH transport should be owned by one session manager in the Rust core behind a Betelgeuz-owned `SshTransport` trait. Upload, command execution, and log streaming should use separate channels over one SSH session rather than sharing one interactive shell. The manager must expose connection state and reconnect events to the JSON-RPC API and deployment services. Betelgeuz ships exactly one production transport for the MVP: the Rust `russh` implementation, with SFTP and forwarding support provided by the selected compatible Rust crates or a small core-owned adapter. There is no dependency on a local `ssh` executable and no runtime dependency on the Remote - SSH extension. The trait exists so tests can substitute a fake transport; it is not a user-selectable production plugin point. Authentication and proxy capabilities that the selected `russh` implementation cannot express, such as unsupported key providers or proxy modes, are explicit unsupported cases that fail with a clear diagnostic; they are never silently delegated to another client.
+The SSH transport should be owned by one session manager in the Rust core behind a Betelgeuz-owned `SshTransport` trait. Upload, command execution, and log streaming should use separate channels over one SSH session rather than sharing one interactive shell. The manager must expose connection state and reconnect events to the JSON-RPC API and deployment services. Betelgeuz ships exactly one production transport for the MVP: the Rust `russh` implementation, with SFTP and forwarding support provided by the selected compatible Rust crates or a small core-owned adapter. There is no dependency on a local `ssh` executable and no runtime dependency on the Remote - SSH extension. The trait exists so tests can substitute a fake transport; it is not a user-selectable production plugin point. The trait surface is capability-shaped — session lifecycle, exec, SFTP, and port forwarding are separate narrow traits owned by the session — so it never grows into a second SSH library API. Authentication and proxy capabilities that the selected `russh` implementation cannot express, such as unsupported key providers or proxy modes, are explicit unsupported cases that fail with a clear diagnostic; they are never silently delegated to another client.
 
-The SSH target profile resolver is separate from the transport implementation. It resolves a Betelgeuz-managed profile containing the endpoint, port, username, credential reference, host-key pin, keepalive settings, and optional Betelgeuz-supported proxy chain. It does not parse external SSH configuration, import external known-host databases, invoke an external SSH client, or depend on an SSH agent. Host-key verification remains explicit in the transport and attach identity layer.
+The serialized profile and workspace override records live in the `protocol` crate. The core profile resolver overlays non-empty workspace values on the selected user profile, validates the endpoint, and returns an opaque credential reference; a separate core credential provider loads its secret material. It does not parse external SSH configuration, import external known-host databases, invoke an external SSH client, or depend on an SSH agent. The transport accepts resolved credentials and a required host-key pin, and must verify that pin before exposing a session. The cached attach identity contains the endpoint, verified host-key fingerprint, and descriptor. Frontend-held passwords and passphrases cross stdio only as one-use sensitive values, are redacted from debug output, and are zeroized when dropped.
 
 The MVP authentication paths are a private-key reference resolved by the core and a password or passphrase held by the frontend's SecretStorage integration. Host keys are pinned or explicitly enrolled in Betelgeuz's own profile store; an unknown host key never becomes trusted implicitly. Proxy chaining, if required, is represented by a typed Betelgeuz profile and implemented by `russh`; unsupported proxy forms fail with the explicit `profile.unsupported-proxy` diagnostic. The core never reads or writes external SSH configuration, agent sockets, or known-host files.
 
-The core exposes a versioned JSON-RPC protocol over stdio. The protocol is JSON-RPC 2.0 with LSP-style message framing, following the rust-analyzer precedent of a Rust core serving multiple editor frontends over stdio; the VS Code adapter reuses the `vscode-jsonrpc` connection library, method names are namespaced (`betelgeuz/*`), and cancellation and progress follow the LSP `$/cancelRequest` and `$/progress` patterns. Artifact bytes never cross the RPC channel — the core transfers them over SFTP itself; requests carry artifact records and paths only. Requests cover target profile resolution, attach/connect, artifact handoff, deploy and lifecycle operations, logs/status, and debug-provider preparation. Notifications carry connection state, target state, progress, output, and structured errors. The protocol is editor-neutral: the VS Code adapter adds CMake Tools and VS Code UI integration, while future adapters supply their editor-specific commands, artifact paths, DAP clients, and presentation.
+The core exposes a versioned JSON-RPC protocol over stdio. The protocol is JSON-RPC 2.0 with LSP-style message framing and a 16 MiB maximum JSON body, following the rust-analyzer precedent of a Rust core serving multiple editor frontends over stdio; the VS Code adapter reuses the `vscode-jsonrpc` connection library, product method names are namespaced (`betelgeuz/*`), and cancellation and progress follow the LSP `$/cancelRequest` and `$/progress` patterns. Artifact bytes never cross the RPC channel — the core transfers them over SFTP itself; requests carry artifact records and paths only. Requests cover target profile resolution, attach/connect, artifact handoff, deploy and lifecycle operations, logs/status, and debug-provider preparation. Notifications carry connection state, target state, progress, output, and structured errors. The protocol is editor-neutral: the VS Code adapter adds CMake Tools and VS Code UI integration, while future adapters supply their editor-specific commands, artifact paths, DAP clients, and presentation.
 
 The frontend/core boundary is strict. Frontends do not open SSH connections, parse target descriptors, construct remote commands, implement deploy strategies, or manage debug endpoint cleanup. The core does not depend on VS Code, Zed, Vim, a DAP client, or a particular build frontend. An artifact request contains a local path, target name, configuration, and optional symbols path; the core validates and deploys that record but never invokes a build command.
 
@@ -106,9 +108,11 @@ Use one project workflow model: CMake Tools selects and builds a target outside 
 
 For the MVP, a workspace has one active attach object. A strategy may internally address a specific endpoint or remote resource, but Betelgeuz does not need a global inventory of every capability in the chip. A Linux application workspace and a small-core firmware workspace can each attach to the same board through different strategies. Each workspace hands over its own artifact — the application executable or the small-core firmware image — through the same artifact handoff contract and the same shared deploy pipeline; what is shared is the mechanism, not the artifact.
 
-The attach object is a workspace-scoped instance containing a strategy ID, endpoint identity, strategy configuration, connection/lifecycle state, and the operations that strategy exposes. The strategy ID selects one workflow implementation; for example, `linux.ssh-app` or `linux.remoteproc`. Strategy-specific details stay inside that implementation rather than becoming chip-wide settings or commands.
+The three layers stay separate: identity identifies what the target is, capability describes what the target exposes, and strategy describes how Betelgeuz operates it. Capabilities are not a modeled inventory; probe results feed the selected strategy's validation and nothing else.
 
-The attach connection state machine is deliberately small: `disconnected`, `connecting` (including host-key and descriptor verification), `attached`, `reconnecting`, and `failed`. Only transport and identity events drive transitions. After any reconnect, the strategy's `inspect` is the source of truth before the UI reports target state. Attach configuration persists in workspace settings, identity pins with the shared target profile, and a created attach with its cached verified identity in frontend-persisted state (workspace state in VS Code); a window reload or core restart resets the connection to `disconnected` without forgetting which board was last verified, and opening a workspace does not auto-connect. `Connect` and attach-dependent commands such as `Deploy` connect on demand; an established connection that drops triggers bounded automatic reconnect without user action, while an explicit `Disconnect` stops all retries. Multiple workspaces attaching to the same physical board is a first-class scenario, not a conflict: each workspace holds its own attach object and connection to the shared board. Cross-attach coordination on one board is user-driven in the MVP; a global device inventory and cross-workspace operation locking remain deferred. A workspace here means one project folder, the unit of configuration and attach; a multi-root window simply hosts one attach object and strategy per folder.
+The attach object is a workspace-scoped instance with a deliberate split between what is persisted and what is runtime. The persisted part is small: a target reference (`targetRef`, the profile or inline target fields), a strategy reference (`strategyRef`, the strategy ID), and the strategy configuration. The runtime part is owned by the core's attach manager: the verified identity cache, connection state with its optional `lastError`, target state, the running operation if any, and the operations the strategy exposes. The strategy ID selects one workflow implementation; for example, `linux.ssh-app` or `linux.remoteproc`. Strategy-specific details stay inside that implementation rather than becoming chip-wide settings or commands.
+
+The attach connection state machine is deliberately small: `disconnected`, `connecting` (including host-key and descriptor verification), `attached`, and `reconnecting`. Each state carries an optional `lastError` (a catalog code) instead of a separate `failed` state, so the reason survives into every frontend; failure is a presentation decision, not a state. Only transport and identity events drive transitions. After any reconnect, the strategy's `inspect` is the source of truth before the UI reports target state. Attach configuration persists in workspace settings, identity pins with the shared target profile, and a created attach with its cached verified identity in frontend-persisted state (workspace state in VS Code); a window reload or core restart resets the connection to `disconnected` without forgetting which board was last verified, and opening a workspace does not auto-connect. `Connect` and attach-dependent commands such as `Deploy` connect on demand; an established connection that drops triggers bounded automatic reconnect without user action, while an explicit `Disconnect` stops all retries. Multiple workspaces attaching to the same physical board is a first-class scenario, not a conflict: each workspace holds its own attach object and connection to the shared board. Cross-attach coordination on one board is user-driven in the MVP; a global device inventory and cross-workspace operation locking remain deferred. A workspace here means one project folder, the unit of configuration and attach; a multi-root window simply hosts one attach object and strategy per folder.
 
 Attach verifies only board identity: the resolved SSH endpoint, configured board identifier where available, and SSH host-key pin. Binding does not probe whether the selected strategy is supported by that target. After binding, each strategy validates the interfaces it needs before offering or executing its operations. If `linux.remoteproc` finds no usable instance, it reports that the selected strategy cannot operate on this target and offers to switch to the application strategy or select another board.
 
@@ -238,6 +242,8 @@ The target profile holds the SSH endpoint fields and the identity pins and is sh
       "username": "root",
       "credentialRef": "board-key",
       "hostKey": "SHA256:...",
+      "keepaliveSeconds": 30,
+      "proxyChain": [],
       "deviceId": "",
       "boardId": "",
       "socId": ""
@@ -246,7 +252,9 @@ The target profile holds the SSH endpoint fields and the identity pins and is sh
 }
 ```
 
-The profile owns a directly usable hostname or IP address, port, username, credential reference, host-key pin, and identity pins. Identity pins describe the physical board and therefore live with the profile, not with each workspace: workspaces sharing a board share one set of pins and cannot drift apart. A workspace may also set target fields inline, for example `betelgeuz.target.host`, for self-contained setups; explicit inline values override the referenced profile. Identity pins come only from the profile, inline settings, or an explicit user enrollment action, never from the hardware descriptor or any observed target value. Passwords, private-key passphrases, and credential material remain in VS Code SecretStorage or the core's protected credential store; the core does not depend on an external SSH agent. Host-specific paths such as a debugger executable are machine-scoped settings.
+The core resolves the named profile first, then overlays non-empty inline target values; the SSH port defaults to `22`. An explicitly selected but missing profile is an error even when some inline values exist. Resolution validates the endpoint fields and returns credential references without loading secret material. A missing host-key pin enters an explicit enrollment flow; it never authorizes reading the target descriptor. Identity pins come only from the profile, inline settings, or that explicit user enrollment action, never from the hardware descriptor or any observed target value. Passwords, private-key passphrases, and credential material remain in VS Code SecretStorage or the frontend's equivalent protected store; only one-use password/passphrase values are sent to the core for an active connection. Host-specific paths such as a debugger executable are machine-scoped settings.
+
+`keepaliveSeconds` defaults to `30`. `proxyChain` is an ordered list of typed SSH hops; each hop has its own endpoint, credential reference, and required pinned host key. Arbitrary proxy commands and unpinned proxy hops are rejected. Frontends supply one-use password/passphrase values keyed by credential reference so each hop can use distinct protected credentials.
 
 The SSH application strategy supports two run modes. `foreground` starts the program in an SSH exec channel, streams its output, and ties the session to the current connection. `service` delegates persistence, restart policy, and status to a target service manager such as systemd, so the process can survive frontend or core shutdown and SSH loss. A service manager is a target-side facility, not VS Code Server. In `service` mode, `betelgeuz.deploy.serviceUnit` names a unit already provisioned by the target image or the user; Betelgeuz does not generate, install, or modify service unit files.
 
@@ -255,8 +263,8 @@ Strategy-specific attach configuration lives in the same settings namespace unde
 ```json
 {
   "betelgeuz.attach.strategy": "linux.remoteproc",
-  "betelgeuz.attach.remoteproc.instance": "30070000.remoteproc",
-  "betelgeuz.attach.remoteproc.firmwarePath": "/lib/firmware/rtos_firmware.elf",
+  "betelgeuz.attach.linux.remoteproc.instance": "30070000.remoteproc",
+  "betelgeuz.attach.linux.remoteproc.firmwarePath": "/lib/firmware/rtos_firmware.elf",
   "betelgeuz.deploy.localTarget": "rtos_firmware"
 }
 ```
@@ -390,7 +398,7 @@ No VS Code Server is needed to run a target process. The core opens SSH exec cha
 
 - **Foreground mode** streams stdout and stderr to the Betelgeuz OutputChannel and reports the exit code or terminating signal. The start command is a fixed template that places the program in its own session and process group and reports its PID as the runtime handle — the process-ownership that a terminal owner gets for free, made explicit for SSH exec. `Stop` sends `SIGTERM` to that process group, waits a configurable grace period (five seconds by default), then escalates to `SIGKILL`; broad process-name matching is never used. A lost SSH channel triggers reconciliation and the configured disconnect policy; the core does not assume that the process received `SIGHUP` or already exited. If the target cannot prove cleanup, it reports `runtime.orphan-risk` and requires service mode or explicit cleanup. Exit reporting distinguishes a normal exit code, a crash signal, and a user-requested stop.
 - **Service mode** starts, stops, restarts, and inspects the application through a target service manager. Logs come from the service manager or a configured log source. Service mode is a conditional capability requiring a supported service manager on the target image, systemd in the first implementation; images without one, such as busybox-based builds, use foreground mode.
-- **Fetch recent output** follows the VS Code scrollback model: output history lives host-side, in the core's per-session ring buffer (the last lines of the current and previous foreground session, lost on core restart), while in service mode it tails the service manager's log source. Persistent remote log files and journal integration remain a Phase 5 (Optimization) item.
+- **Fetch recent output** follows the VS Code scrollback model: output history lives host-side, in the core's per-session ring buffer (the last lines of the current and previous foreground session, lost on core restart), while in service mode it tails the service manager's log source. Persistent remote log files and journal integration remain a Phase 7 (Optimization) item.
 - After an SSH disconnect, the strategy reconnects and queries process or service state before updating the UI. It must not infer that a process stopped merely because its SSH channel closed.
 - A running Linux application process is execution state, not proof of application health. Optional health probes, heartbeats, or service health may provide stronger evidence.
 
@@ -436,7 +444,7 @@ The target-selection command resolves the workspace's Betelgeuz SSH profile and 
 
 ### Status bar
 
-Show a compact state such as `Betelgeuz: Disconnected`, `Betelgeuz: Connecting`, `Betelgeuz: Attached`, or `Betelgeuz: Reconnecting`. A `failed` attach is shown as `Disconnected`, with the error surfaced through the notification and OutputChannel. The attach view should show the configured endpoint, selected strategy, connection status, and strategy-provided operations. It should not enumerate unrelated chip resources.
+Show a compact state such as `Betelgeuz: Disconnected`, `Betelgeuz: Connecting`, `Betelgeuz: Attached`, or `Betelgeuz: Reconnecting`. An error renders as `Disconnected` with its reason taken from `lastError` and surfaced through the notification and OutputChannel. The attach view should show the configured endpoint, selected strategy, connection status, and strategy-provided operations. It should not enumerate unrelated chip resources.
 
 ### Output
 
@@ -489,27 +497,38 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Offer the implemented `linux.ssh-app` strategy for the first attach flow. Attach creation verifies
   board identity only; the strategy validates its own runtime interfaces before its operations.
 
+First working slice acceptance: from the VS Code adapter, `Connect` → host-key verification → descriptor read → SFTP upload to a scratch path → structured exec → streamed stdout → `Stop`, against the Tier 1 board. The slice consumes a manually supplied artifact record; CMake handoff (Phase 2), reconciliation depth (Phase 3), service mode (Phase 4), `linux.remoteproc` (Phase 5), and debug (Phase 6) are explicitly out of scope.
+
 ### Phase 2: CMake artifact integration
 
-- Let the VS Code adapter resolve the active CMake target and already-built artifact path, then send the normalized artifact record to the Rust core. Other frontends provide the same record through their own build integration or configuration.
+- Let the VS Code adapter resolve the active CMake target and already-built artifact path, then send the normalized artifact record to the Rust core. Other frontends provide the same record through their own build integration or configuration. Resolution is API-first with the File API codemodel as fallback.
 - Add the standalone `Deploy` command; Deploy must not trigger a build.
 - Support a workspace-level deployment profile for different binaries or boards.
 - Add cancellation and clear failure reporting for artifact resolution and deploy.
-- Add optional systemd service-managed run mode when the target service manager and pre-provisioned
-  unit pass capability checks; expose a clear fallback to foreground mode otherwise.
 
-### Phase 3: Attach contract and Linux remoteproc strategy
+### Phase 3: Reconnect and state reconciliation
+
+- Reconnect with bounded backoff after a drop; an explicit `Disconnect` stops all retries.
+- On reconnect, re-verify identity before reporting anything, then re-query target state through `inspect` and restore the UI; a dead channel is never evidence about the target.
+- Keep the host-side output ring buffer serving `fetch recent output` after the process has ended or the connection dropped.
+- Acceptance: a mid-session drop during and after a deploy reconnects, re-validates identity, restores accurate state, and reports the foreground process outcome without a window reload.
+
+### Phase 4: Service mode (systemd)
+
+- Add optional systemd service-managed run mode when the target service manager and pre-provisioned unit pass capability checks; expose a clear fallback to foreground mode otherwise.
+- Service logs come from the service manager; service-managed applications remain controllable after the core disconnects.
+
+### Phase 5: Small-core strategy (`linux.remoteproc`)
 
 - Add the small-core role and `linux.remoteproc` strategy to the strategy picker and common contract.
 - Bind the user-selected strategy immediately after SSH identity verification. Probe for the
   `remoteproc` interface after binding and report an actionable incompatibility without discarding
   the attach.
-- Resolve existing CMake target artifact paths through CMake Tools, with File API codemodel fallback.
 - Bind the workspace's selected CMake artifact to its configured attach strategy.
 - Implement the `linux.remoteproc` deploy strategy: firmware upload, selection, stop/start, state reporting, and failure recovery.
 - Publish the least-privilege target setup for firmware management: the root-SSH mode and the documented `NOPASSWD` sudo whitelist, with all privileged commands as fixed templates.
 
-### Phase 4: Debug integrations
+### Phase 6: Debug integrations
 
 - Define the host-centric debug-provider contract and its temporary endpoint lifecycle.
 - For Linux application workspaces, launch `gdbserver` over SSH on the target loopback interface, forward its port, and connect the host-side debugger (LLDB via CodeLLDB) through the frontend's DAP integration.
@@ -522,7 +541,7 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 
 The Rust core owns debug endpoint and SSH-forward lifecycle. The frontend owns only its editor-specific DAP launch or debug-session presentation. A frontend disconnect must be propagated to the core so temporary target resources are cleaned up.
 
-### Phase 5: Optimization
+### Phase 7: Optimization
 
 - Add remote log file or journal integration.
 - Add hash-based skip-upload and optional compressed transfer.
@@ -601,7 +620,7 @@ The Rust core owns debug endpoint and SSH-forward lifecycle. The frontend owns o
 - Treat configured launch environment values as secrets by default: do not echo them in command
   diagnostics, structured errors, or the OutputChannel.
 - Treat board-provided metadata as untrusted input.
-- Quote remote command arguments or pass structured arguments where the SSH library allows it.
+- Remote commands are structured invocations — executable, argument list, working directory, environment — never free-form shell lines assembled from input; the only shell forms are fixed templates with zero interpolation.
 - Reject free-form remote launch commands; use the fixed launcher and tested argument/environment
   encoding described in the Linux userspace runtime contract.
 - Use bounded reconnect backoff and stop retrying after explicit disconnect.
@@ -629,7 +648,7 @@ The MVP is complete when a developer can:
 5. Run `Deploy` and see that existing artifact deployed by the active strategy without an implicit rebuild.
 6. Start, stop, and restart the active target through the selected strategy.
 7. See remote stdout and stderr in the VS Code output panel.
-8. Recover from a temporary SSH failure without restarting VS Code.
+8. Recover from a temporary SSH failure without restarting VS Code: after a drop the core reconnects with bounded backoff, re-verifies identity, re-queries target state through `inspect`, and restores the UI — never inferring state from the dead connection.
 9. See foreground output and exit status, or inspect service status/logs after reconnecting.
    Service status/logs are required only when the selected target has passed the systemd capability probe.
 10. Receive clear errors for an unresolved SSH profile, authentication failure, host-key mismatch, descriptor mismatch, upload failure, and remote process failure.
@@ -650,9 +669,9 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Host platforms: the first release supports **Windows and Linux** development hosts. `betelgeuz-core` is built and tested per platform (win32-x64 and linux-x64 first), shipped inside the VSIX, with the platform-specific surface limited to packaging, credential storage, and process management.
 - Core and transport: a Rust `betelgeuz-core` with exactly one transport, `russh`. There is no external SSH client, configuration parser, agent integration, or fallback transport; unsupported authentication or proxy capabilities fail with explicit diagnostics. Remote - SSH extension internals are not a supported dependency. Betelgeuz owns target profiles, credentials, host-key pins, and proxy configuration.
 - Run modes: `foreground` plus `service` mode against a unit provisioned on the target. A PID-file launcher and board-side helpers remain deferred, and a custom detached launcher must persist an unambiguous process identity before it can support stop or status operations.
-- Configuration model: two layers — a shareable user-level `betelgeuz.profiles` entry holding the direct SSH endpoint, credential reference, and identity pins, and workspace-scoped `betelgeuz.attach.*` / `betelgeuz.deploy.*` keys. The concrete key list for each strategy is a Phase 0 work item.
+- Configuration model: two layers — a shareable user-level `betelgeuz.profiles` entry holding the direct SSH endpoint, credential reference, and identity pins, and workspace-scoped `betelgeuz.attach.*` / `betelgeuz.deploy.*` keys. The key list is owned by `protocol::config`; implemented strategy keys use the full strategy ID as their prefix. The first small-core strategy uses `betelgeuz.attach.linux.remoteproc.instance` and `betelgeuz.attach.linux.remoteproc.firmwarePath`.
 - Artifact and firmware validation: host-side format and architecture checks (ELF header parsing or a declared raw binary), with the instance identified by its `name` and the target profile pins; ELF metadata and declared format/size checks only — a board-provided manifest is deferred.
-- Artifact selection: no staleness detection — Deploy consumes the build owner's output as-is. The MVP applies the exactly-one rule per target and fails multi-artifact targets with `artifact.ambiguous`; multi-artifact selection through `betelgeuz.deploy.artifact` is scheduled for Phase 5 (Optimization).
+- Artifact selection: no staleness detection — Deploy consumes the build owner's output as-is. The MVP applies the exactly-one rule per target and fails multi-artifact targets with `artifact.ambiguous`; multi-artifact selection through `betelgeuz.deploy.artifact` is scheduled for Phase 7 (Optimization).
 - Privilege model: a root SSH account or the documented `NOPASSWD` sudo whitelist Betelgeuz publishes; privileged commands are fixed templates with no interpolated user input. A target-side helper remains deferred behind a privilege runner seam.
 - Support tier: Lichee RVNano is the sole Tier 1 board; all other board families are future support targets.
 - Strategy model: deploy strategies are peers in a compile-time registry with declarative metadata (ID, role, config schema, error-code namespace, privilege class, and validation entry points). The user selects among implemented strategies; attach creation depends on SSH identity verification only, and target compatibility is checked afterward by the selected strategy. All strategies share the core's SSH session.

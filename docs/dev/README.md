@@ -11,7 +11,8 @@ everything else is kept coherent.
 | `docs/PLAN.md` | architecture + decision record (the *why*) | updated when a decision or contract changes; section text is normative, §12 is the decision log with triggers |
 | `docs/dev/*.md` | living developer guides (the *how*) | one audience, one task per document; short; changed in the same commit as the code |
 | `docs/ERRORS.md` | generated from common core and strategy error definitions | never hand-edited (`cargo xtask gen-errors`) |
-| `docs/protocol.md`, `schemas/` | generated from the `protocol` crate | never hand-edited (`cargo xtask gen-schema`) |
+| `docs/protocol.md`, `schemas/protocol/`, `schemas/strategies/` | generated from protocol and strategy contracts | never hand-edited (`cargo xtask gen-schema`) |
+| `editors/code/src/protocol.ts` | generated from protocol and strategy JSON Schemas | never hand-edited (`cargo xtask gen-ts`) |
 | `README.md` | entry point | links outward; never duplicates content that lives elsewhere |
 | crate/module rustdoc | contract summary at each boundary | every crate's `lib.rs` states what it owns and what it forbids; `TODO(Phase X)` markers tie code to plan phases |
 
@@ -39,6 +40,9 @@ everything else is kept coherent.
    `docs/dev/<topic>.md` (for example `strategy-howto.md` when the first
    strategy implementation lands). Each ends with a worked reference to an
    existing example in the codebase.
+8. **The error catalog may lead its behavior.** Codes are the semantic record and may exist before
+   any code path produces them; behavior is never written for a code that no code path can
+   produce yet.
 
 ## Testing
 
@@ -54,6 +58,9 @@ Phase 0 is exploratory: tests protect boundaries and contracts, not coverage.
   does. Lint-level checks belong in lints, not in `#[test]`.
 - **Business-flow tests are deliverables of the phase that implements the
   flow** (see plan §9), not accompaniments to skeleton code.
+- Run `cargo xtask gen-errors --check`, `cargo xtask gen-schema --check`, and
+  `cargo xtask gen-ts --check` to verify generated artifacts without rewriting
+  them.
 
 ## Naming
 
