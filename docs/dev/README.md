@@ -62,8 +62,10 @@ against these rules; they are enforced by review and by the checklist at the bot
    code path produces.
 4. **A crate exists to enforce dependency direction or produce a separate artifact.** If
    its contents would compile fine as a module, it is a module.
-5. **Wire types need a consumer in the same change** — a core service or frontend adapter
-   that actually uses them. Contract-only types land with the method that serves them.
+5. **Data may lead, indirection may not.** Wire types, config keys, and catalog entries are
+   contract data: they may land before the code that serves them, following the plan's
+   method table. Traits, registries, generic slots, and provider indirections land with
+   their second implementation.
 6. **Duplication beats indirection at small scale.** Ten copied lines are cheaper than a
    wrong interface; extract on the second occurrence, never on the first forecast.
 7. **Per-change checklist** (in the commit message or review): *What is the second
