@@ -66,18 +66,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_names_are_namespaced() {
-        for method in [
-            INITIALIZE, SHUTDOWN, PING, RESOLVE_PROFILE, ATTACH, DISCONNECT,
-            ARTIFACT_HANDOFF, DEPLOY, START, STOP, RESTART, LOGS, INSPECT,
-            DEBUG_PREPARE, RESTORE_PREVIOUS, CANCEL, CONNECTION_STATE,
-            TARGET_STATE, PROGRESS, OUTPUT,
-        ] {
-            assert!(method.starts_with("betelgeuz/"), "{method} must be namespaced");
-        }
-    }
-
-    #[test]
     fn initialize_params_round_trip() {
         let params = InitializeParams {
             protocol_version: "0.1.0".into(),

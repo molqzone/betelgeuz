@@ -40,6 +40,21 @@ everything else is kept coherent.
    strategy implementation lands). Each ends with a worked reference to an
    existing example in the codebase.
 
+## Testing
+
+Phase 0 is exploratory: tests protect boundaries and contracts, not coverage.
+
+- **Test** three kinds of thing: anti-drift assertions over generated artifacts
+  and wire formats (catalog ↔ `docs/ERRORS.md`, config key shapes, serialized
+  shapes), pure function boundaries (framing, encode/decode, version
+  negotiation), and regressions for bugs actually caught.
+- **Do not test** shapes that are still in flux (request params and the
+  strategy contract get their contract tests when the contract freezes),
+  tautologies the type system already guarantees, or what the code obviously
+  does. Lint-level checks belong in lints, not in `#[test]`.
+- **Business-flow tests are deliverables of the phase that implements the
+  flow** (see plan §9), not accompaniments to skeleton code.
+
 ## Naming
 
 - **Workspace crates are short single words** (`protocol`, `transport`,

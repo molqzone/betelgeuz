@@ -5,17 +5,16 @@
 //! strategies. The loop is synchronous for now; it moves to the async runtime
 //! when the russh transport lands (Phase 1).
 
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Write};
 
 use protocol::{
-    error::{ErrorCode, RpcError},
+    error::RpcError,
     methods::{self, InitializeParams, InitializeResult},
-    negotiate, BetelgeuzError,
+    negotiate,
 };
 use serde_json::{json, Value};
 
 // Standard JSON-RPC error codes for protocol-level failures.
-pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -128,11 +127,6 @@ pub fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<(
         }
     }
     Ok(())
-}
-
-/// Converts an unexpected failure into a catalog error for the log.
-pub fn unexpected(phase: protocol::Phase, cause: impl std::fmt::Display) -> BetelgeuzError {
-    BetelgeuzError::wrap_unexpected(phase, cause)
 }
 
 #[cfg(test)]

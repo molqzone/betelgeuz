@@ -504,27 +504,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_code_is_namespaced_and_resolvable() {
-        for code in ErrorCode::ALL {
-            let name = code.code();
-            assert!(name.contains('.'), "{name} must be namespaced");
-            assert!(name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == '.' || c == '-'));
-            assert_eq!(ErrorCode::from_code(name), Some(code));
-        }
-    }
-
-    #[test]
-    fn every_code_has_a_remediation_and_summary() {
-        for code in ErrorCode::ALL {
-            let def = code.def();
-            assert!(!def.summary.is_empty());
-            assert!(!def.remediation.as_str().is_empty());
-        }
-    }
-
-    #[test]
     fn application_error_carries_catalog_data() {
         let err = BetelgeuzError::new(ErrorCode::SshLost).with_detail("eof");
         let rpc = RpcError::application(&err);
