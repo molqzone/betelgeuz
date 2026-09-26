@@ -1,6 +1,6 @@
 # Betelgeuz
 
-Attach-and-deploy tooling for embedded Linux development: a headless local control core (`betelgeuz-core`, Rust) with editor adapters — a VS Code extension first, with Zed / Neovim / Vim and CLI frontends planned. Everything lives in one monorepo, following the rust-analyzer layout.
+Attach-and-deploy tooling for embedded Linux development: a headless local control core (`betelgeuz-core`, Rust) with editor adapters — a VS Code extension first, with Zed and Neovim/Vim frontends planned. Everything lives in one monorepo, following the rust-analyzer layout.
 
 ## Layout
 

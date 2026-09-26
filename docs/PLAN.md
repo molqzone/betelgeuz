@@ -2,7 +2,7 @@
 
 ## 1. Project Goal
 
-Develop Betelgeuz as a headless local control core with editor adapters, initially a VS Code extension, for attach-and-deploy embedded Linux development. Lichee RVNano is the sole Tier 1 board; other boards are future support targets. CMake Tools remains the workspace's build owner and produces the selected target artifact; Betelgeuz consumes that existing artifact through the active attach object and manages the target lifecycle. Separate workspaces can use the same flow with different deploy strategies, such as SSH application deployment for a Linux userspace workspace and Linux `remoteproc` for a small-core firmware workspace. The core protocol must also support future Zed, Neovim/Vim, and CLI frontends without duplicating SSH or deployment logic.
+Develop Betelgeuz as a headless local control core with editor adapters, initially a VS Code extension, for attach-and-deploy embedded Linux development. Lichee RVNano is the sole Tier 1 board; other boards are future support targets. CMake Tools remains the workspace's build owner and produces the selected target artifact; Betelgeuz consumes that existing artifact through the active attach object and manages the target lifecycle. Separate workspaces can use the same flow with different deploy strategies, such as SSH application deployment for a Linux userspace workspace and Linux `remoteproc` for a small-core firmware workspace. The core protocol must also support future Zed and Neovim/Vim frontends without duplicating SSH or deployment logic.
 
 North star: Betelgeuz is not a build system, a remote IDE, a board manager, or an SSH frontend. It is a local target-control core that binds an existing build artifact to a verified target through a selected deployment strategy, and owns deployment, target lifecycle, and debug endpoint management for that binding.
 
@@ -57,7 +57,6 @@ Editor frontend
   ├─ VS Code extension (initial)
   ├─ Zed adapter (future)
   ├─ Neovim/Vim adapter (future)
-  ├─ CLI adapter (future)
   └─ Versioned JSON-RPC client over stdio
 
 Local betelgeuz-core (Rust)
@@ -480,7 +479,7 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Build and package `betelgeuz-core` for the supported host platforms: win32-x64 and linux-x64 first, extending the matrix as needed.
 - Let the VS Code adapter start, monitor, and shut down the core child process.
 - Add protocol version negotiation, request cancellation, structured errors, and crash/restart handling.
-- Keep the core scriptable over stdio JSON-RPC from the start: a shell pipe is the early harness, and a product CLI frontend is deferred until a scripting or CI consumer exists.
+- Keep the core scriptable over stdio JSON-RPC from the start: a shell pipe is the early harness. No product CLI is planned — see the resolved record.
 
 ### Phase 1: SSH profile MVP
 
@@ -652,7 +651,7 @@ The MVP is complete when a developer can:
 9. See foreground output and exit status, or inspect service status/logs after reconnecting.
    Service status/logs are required only when the selected target has passed the systemd capability probe.
 10. Receive clear errors for an unresolved SSH profile, authentication failure, host-key mismatch, descriptor mismatch, upload failure, and remote process failure.
-11. A future CLI or editor adapter can perform the same attach and deploy operations through the documented core protocol without reimplementing SSH.
+11. A future editor adapter can perform the same attach and deploy operations through the documented core protocol without reimplementing SSH.
 
 The attach milestone is complete when CMake Tools has produced an artifact, Betelgeuz can resolve that existing artifact, and the workspace's active strategy can deploy it and report lifecycle state through the common workflow. The Linux `remoteproc` milestone is complete when a firmware workspace can use its existing CMake Tools artifact, deploy through its selected attach object, control remoteproc lifecycle, and observe the resulting state and errors.
 
@@ -702,3 +701,4 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Multi-file deploy: deploying an application together with shared libraries or configuration files as one operation. Trigger: a real application workspace that needs several files deployed together. A manifest-style deploy contract would be designed then.
 - Publishing protocol JSON Schema artifacts. Trigger: a third-party frontend or the published `betelgeuz-protocol` facade consumes them. Until then the schemas are build artifacts under `target/schema/`, following rust-analyzer, which keeps only Rust types plus a human-readable protocol reference in the repository.
 - A product CLI frontend. Trigger: a scripting or CI consumer, or an editor without a dedicated adapter, needs one. rust-analyzer's early subcommands were developer diagnostics on the server binary, not a product CLI; the stdio protocol keeps the core scriptable meanwhile.
+- Frontends are editor adapters only (VS Code first; Zed and Neovim/Vim later). A product CLI is not part of the vision: the stdio protocol is the automation surface, and a CLI would only wrap `ssh`/`scp` for cases scripts already cover.
