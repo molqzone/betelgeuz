@@ -22,6 +22,7 @@ use zeroize::Zeroize;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod fake;
+pub mod russh_transport;
 
 /// SSH endpoint data after core-owned profile resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
