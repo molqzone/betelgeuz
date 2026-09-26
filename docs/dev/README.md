@@ -42,7 +42,32 @@ everything else is kept coherent.
    existing example in the codebase.
 8. **The error catalog may lead its behavior.** Codes are the semantic record and may exist before
    any code path produces them; behavior is never written for a code that no code path can
-   produce yet.
+   produce yet. This is the one documented exception to the rule of two: catalog entries are
+   data, not indirection.
+
+## Abstraction policy
+
+An indirection may not exist before its second concrete use. Every change is checked
+against these rules; they are enforced by review and by the checklist at the bottom.
+
+1. **Rule of two.** A trait, registry, provider slot, or generic parameter requires two
+   concrete implementations or two real consumers in the tree before it is introduced. A
+   test fake is not an implementation. Until then, write the concrete code or accept small
+   duplication.
+2. **The plan reserves names, not code shapes.** The plan may name a concept (strategy,
+   debug provider); the code creates the indirection when the second implementation lands,
+   not when the first is written.
+3. **No empty containers.** No registry/factory/manager holding things that do not exist
+   yet, no `Arc<dyn _>` collections with fewer than two members, no enum variants that no
+   code path produces.
+4. **A crate exists to enforce dependency direction or produce a separate artifact.** If
+   its contents would compile fine as a module, it is a module.
+5. **Wire types need a consumer in the same change** — a core service or frontend adapter
+   that actually uses them. Contract-only types land with the method that serves them.
+6. **Duplication beats indirection at small scale.** Ten copied lines are cheaper than a
+   wrong interface; extract on the second occurrence, never on the first forecast.
+7. **Per-change checklist** (in the commit message or review): *What is the second
+   implementation or consumer of each new indirection?* If there is none, revert it.
 
 ## Testing
 
