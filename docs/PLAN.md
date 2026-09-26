@@ -681,6 +681,8 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
   the public contract.
 - Debug adapter: the VS Code frontend binds CodeLLDB (`vadimcn.vscode-lldb`) as its DAP integration and maps the core's debugger-agnostic configuration to a `lldb` launch configuration (`target create` plus `gdb-remote` over the core's port forward). CodeLLDB covers all three RSP flows — application `gdbserver`, firmware GDB stubs, and OpenOCD-based probes — and satisfies the selection criteria: permissive licensing, maintained releases, and source-path mapping (via `target.source-map` where needed). The core stays debugger-neutral; the Debug action appears only when the DAP integration is installed, and a board whose stub proves LLDB-incompatible would add a GDB-based adapter at the frontend layer with no core changes.
 
+- Frontends are editor adapters only (VS Code first; Zed and Neovim/Vim later). A product CLI is not part of the vision: the stdio protocol is the automation surface, and a CLI would only wrap `ssh`/`scp` for cases scripts already cover. The core stays scriptable over stdio for any future automation need.
+
 ### Phase 0 spikes (the experiment produces the choice)
 
 - CMake Tools artifact resolution: which CMake Tools API gives the most reliable artifact path for the selected target, and where the File API codemodel fallback is needed. The workflow already mandates API-first with File API fallback; the spike validates the mapping and produces a tested fallback matrix.
@@ -700,5 +702,3 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Dynamic strategy loading: third-party strategies as loadable modules or WASM components. Trigger: strategy demand beyond the core's own implementations. The registry metadata is the seam; the MVP registry is compile-time.
 - Multi-file deploy: deploying an application together with shared libraries or configuration files as one operation. Trigger: a real application workspace that needs several files deployed together. A manifest-style deploy contract would be designed then.
 - Publishing protocol JSON Schema artifacts. Trigger: a third-party frontend or the published `betelgeuz-protocol` facade consumes them. Until then the schemas are build artifacts under `target/schema/`, following rust-analyzer, which keeps only Rust types plus a human-readable protocol reference in the repository.
-- A product CLI frontend. Trigger: a scripting or CI consumer, or an editor without a dedicated adapter, needs one. rust-analyzer's early subcommands were developer diagnostics on the server binary, not a product CLI; the stdio protocol keeps the core scriptable meanwhile.
-- Frontends are editor adapters only (VS Code first; Zed and Neovim/Vim later). A product CLI is not part of the vision: the stdio protocol is the automation surface, and a CLI would only wrap `ssh`/`scp` for cases scripts already cover.
