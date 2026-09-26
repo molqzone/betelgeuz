@@ -3,7 +3,8 @@
 //! This crate owns:
 //! - the JSON-RPC 2.0 method surface ([`methods`]), including LSP control
 //!   notifications for request cancellation and progress;
-//! - the initialize handshake and protocol version negotiation ([`negotiate`]);
+//! - the initialize handshake's protocol version constant (negotiation itself
+//!   is frontend/core glue and lives in the core's dispatch layer;
 //! - the JSON-RPC error wire envelope ([`error::RpcError`]);
 //! - the hardware descriptor schema ([`descriptor`]);
 //! - the configuration key surface ([`config`]).
@@ -33,48 +34,3 @@ pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// JSON-RPC method namespace.
 pub const METHOD_NAMESPACE: &str = "betelgeuz";
-
-/// Version negotiation: while the protocol is `0.x`, versions must match
-/// exactly. A mismatch is returned to the caller rather than silently
-/// degrading.
-pub fn negotiate(requested: &str) -> Result<String, VersionMismatch> {
-    if requested == PROTOCOL_VERSION {
-        Ok(PROTOCOL_VERSION.to_string())
-    } else {
-        Err(VersionMismatch {
-            core_version: PROTOCOL_VERSION,
-            requested: requested.to_string(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionMismatch {
-    pub core_version: &'static str,
-    pub requested: String,
-}
-
-impl std::fmt::Display for VersionMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "core {}, frontend {}", self.core_version, self.requested)
-    }
-}
-
-impl std::error::Error for VersionMismatch {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn negotiate_accepts_matching_version() {
-        assert_eq!(negotiate(PROTOCOL_VERSION).unwrap(), PROTOCOL_VERSION);
-    }
-
-    #[test]
-    fn negotiate_rejects_mismatch() {
-        let err = negotiate("9.9.9").unwrap_err();
-        assert_eq!(err.core_version, PROTOCOL_VERSION);
-        assert_eq!(err.requested, "9.9.9");
-    }
-}

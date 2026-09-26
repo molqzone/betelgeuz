@@ -11,7 +11,6 @@ use errors::{BetelgeuzError, ErrorCode};
 use protocol::{
     error::{RpcError, RpcErrorData},
     methods::{self, AttachRequest, InitializeParams, InitializeResult},
-    negotiate,
 };
 use serde_json::{json, Value};
 use zeroize::Zeroize;
@@ -193,22 +192,23 @@ fn initialize_response(id: Value, params: Value) -> Value {
         Ok(parsed) => parsed,
         Err(e) => return error_response(id, RpcError::protocol(INVALID_REQUEST, e.to_string())),
     };
-    match negotiate(&parsed.protocol_version) {
-        Ok(version) => result_response(
-            id,
-            serde_json::to_value(InitializeResult {
-                protocol_version: version,
-                core_version: env!("CARGO_PKG_VERSION").to_string(),
-                capabilities: Vec::new(), // grows with the service surface (Phase 0+)
-            })
-            .expect("InitializeResult serializes"),
-        ),
-        Err(err) => {
-            let error =
-                BetelgeuzError::new(ErrorCode::ProtocolMismatch).with_detail(err.to_string());
-            error_response(id, application_error(&error))
-        }
+    if parsed.protocol_version != protocol::PROTOCOL_VERSION {
+        let error = BetelgeuzError::new(ErrorCode::ProtocolMismatch).with_detail(format!(
+            "core {}, frontend {}",
+            protocol::PROTOCOL_VERSION,
+            parsed.protocol_version
+        ));
+        return error_response(id, application_error(&error));
     }
+    result_response(
+        id,
+        serde_json::to_value(InitializeResult {
+            protocol_version: protocol::PROTOCOL_VERSION.to_string(),
+            core_version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: Vec::new(), // grows with the service surface (Phase 0+)
+        })
+        .expect("InitializeResult serializes"),
+    )
 }
 
 fn application_error(err: &BetelgeuzError) -> RpcError {
