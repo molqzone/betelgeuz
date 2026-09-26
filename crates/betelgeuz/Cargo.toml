@@ -12,3 +12,4 @@ path = "src/main.rs"
 
 [dependencies]
 protocol = { path = "../protocol" }
+serde_json.workspace = true

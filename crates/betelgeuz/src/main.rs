@@ -7,10 +7,23 @@
 //! strategy registry. The core never invokes a build command and never depends
 //! on a particular editor.
 
-use protocol::{METHOD_NAMESPACE, PROTOCOL_VERSION};
+mod rpc;
+
+use std::io::{self, BufReader};
+
+use protocol::METHOD_NAMESPACE;
 
 fn main() {
-    // TODO(Phase 0): stdio JSON-RPC server — initialize/version negotiation,
-    // request dispatch, notifications, cancellation, structured errors.
-    println!("{METHOD_NAMESPACE} core {PROTOCOL_VERSION} (JSON-RPC server not implemented yet)");
+    eprintln!(
+        "{METHOD_NAMESPACE} core {} starting (stdio JSON-RPC)",
+        protocol::PROTOCOL_VERSION
+    );
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut reader = BufReader::new(stdin.lock());
+    let mut writer = stdout.lock();
+    if let Err(e) = rpc::serve(&mut reader, &mut writer) {
+        eprintln!("betelgeuz-core: transport failure: {e}");
+        std::process::exit(1);
+    }
 }

@@ -323,6 +323,7 @@ The initial catalog:
 
 | code | phase | meaning | remediation | retriable |
 | --- | --- | --- | --- | --- |
+| `protocol.mismatch` | config | frontend and core speak incompatible protocol versions | upgrade one side | no |
 | `profile.unresolved` | profile | target profile not found or incomplete | check the Betelgeuz profile settings | no |
 | `profile.unsupported-proxy` | profile | profile uses a proxy form the transport cannot express | fix the profile's proxy settings | no |
 | `config.invalid` | config | invalid `betelgeuz.*` setting value | open settings at the offending key | no |

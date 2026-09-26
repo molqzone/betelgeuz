@@ -4,4 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Single source of truth for the betelgeuz JSON-RPC protocol, configuration schema, and hardware descriptor schema. Internal workspace crate; a published facade for third-party frontends would ship as `betelgeuz-protocol`."
+description = "Single source of truth for the betelgeuz JSON-RPC protocol, error catalog, and hardware descriptor schema. Internal workspace crate; a published facade for third-party frontends would ship as `betelgeuz-protocol`."
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -9,3 +9,6 @@ description = "Codegen and packaging tasks (rust-analyzer-style xtask)."
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
+
+[dependencies]
+protocol = { path = "../crates/protocol" }
