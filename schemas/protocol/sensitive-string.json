@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SensitiveString",
+  "description": "One-use secret material supplied from frontend protected storage. It is\nnever persisted with the profile or echoed in protocol results.",
+  "type": "string"
+}

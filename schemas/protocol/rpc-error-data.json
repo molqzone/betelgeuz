@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RpcErrorData",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string"
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase": {
+      "type": "string"
+    },
+    "remediation": {
+      "description": "Stable action identifier for frontend-specific presentation.",
+      "type": "string"
+    },
+    "retriable": {
+      "type": "boolean"
+    },
+    "targetState": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "code",
+    "phase",
+    "retriable",
+    "remediation"
+  ]
+}

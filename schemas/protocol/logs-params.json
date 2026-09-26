@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LogsParams",
+  "type": "object",
+  "properties": {
+    "attachId": {
+      "type": "string"
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "maxBytes": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 65536,
+      "minimum": 0
+    }
+  },
+  "required": [
+    "attachId"
+  ]
+}

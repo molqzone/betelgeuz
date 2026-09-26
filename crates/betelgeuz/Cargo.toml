@@ -15,4 +15,6 @@ protocol = { path = "../protocol" }
 errors = { path = "../errors" }
 transport = { path = "../transport" }
 strategy = { path = "../strategy" }
+serde.workspace = true
 serde_json.workspace = true
+zeroize.workspace = true

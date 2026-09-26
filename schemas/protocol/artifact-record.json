@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ArtifactRecord",
+  "description": "Normalized record for an artifact that already exists on the frontend's\nhost. The artifact bytes remain local and are transferred by the core.",
+  "type": "object",
+  "properties": {
+    "configuration": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "contentHash": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "size": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "symbolsPath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targetName": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "targetName",
+    "size",
+    "contentHash"
+  ]
+}

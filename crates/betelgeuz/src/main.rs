@@ -7,6 +7,7 @@
 //! strategy registry. The core never invokes a build command and never depends
 //! on a particular editor.
 
+pub mod profile;
 mod rpc;
 
 use std::io::{self, BufReader};

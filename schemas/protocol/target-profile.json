@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TargetProfile",
+  "description": "Target connection settings and board identity pins. Secret material stays\nin protected credential storage; `credential_ref` is only a lookup key.",
+  "type": "object",
+  "properties": {
+    "boardId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "credentialRef": {
+      "type": "string"
+    },
+    "deviceId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "host": {
+      "type": "string"
+    },
+    "hostKey": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "keepaliveSeconds": {
+      "type": "integer",
+      "format": "uint16",
+      "default": 30,
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "port": {
+      "type": "integer",
+      "format": "uint16",
+      "default": 22,
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "proxyChain": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ProxyHopProfile"
+      }
+    },
+    "socId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "username": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "host",
+    "username",
+    "credentialRef"
+  ],
+  "$defs": {
+    "ProxyHopProfile": {
+      "description": "One configured jump host. Every hop has its own credential reference and\npinned SSH host key; arbitrary proxy commands are not accepted.",
+      "type": "object",
+      "properties": {
+        "credentialRef": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "hostKey": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 22,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "username",
+        "credentialRef",
+        "hostKey"
+      ]
+    }
+  }
+}

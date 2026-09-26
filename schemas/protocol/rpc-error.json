@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RpcError",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RpcErrorData"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "$defs": {
+    "RpcErrorData": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase": {
+          "type": "string"
+        },
+        "remediation": {
+          "description": "Stable action identifier for frontend-specific presentation.",
+          "type": "string"
+        },
+        "retriable": {
+          "type": "boolean"
+        },
+        "targetState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "phase",
+        "retriable",
+        "remediation"
+      ]
+    }
+  }
+}

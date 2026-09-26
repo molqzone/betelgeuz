@@ -14,3 +14,5 @@ path = "src/main.rs"
 protocol = { path = "../crates/protocol" }
 errors = { path = "../crates/errors" }
 strategy = { path = "../crates/strategy" }
+schemars.workspace = true
+serde_json.workspace = true

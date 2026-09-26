@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TargetStateParams",
+  "type": "object",
+  "properties": {
+    "attachId": {
+      "type": "string"
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "attachId",
+    "state"
+  ]
+}

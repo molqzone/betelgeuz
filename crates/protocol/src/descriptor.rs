@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HardwareDescriptor {
     /// Stable board identity; required for identity pinning when present.
@@ -25,6 +25,17 @@ pub struct HardwareDescriptor {
     /// Version of the descriptor format itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<u32>,
+}
+
+/// Identity captured after the SSH host key is pinned or explicitly enrolled
+/// and the hardware descriptor is read over that verified session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedTargetIdentity {
+    pub host: String,
+    pub port: u16,
+    pub host_key_fingerprint: String,
+    pub descriptor: HardwareDescriptor,
 }
 
 #[cfg(test)]

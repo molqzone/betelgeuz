@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TargetOperation",
+  "type": "string",
+  "enum": [
+    "deploy",
+    "start",
+    "stop",
+    "restart",
+    "restorePrevious",
+    "logs",
+    "debugPrepare"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CancelParams",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/ProgressToken"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "$defs": {
+    "ProgressToken": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        }
+      ]
+    }
+  }
+}

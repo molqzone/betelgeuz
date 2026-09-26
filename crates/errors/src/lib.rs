@@ -69,6 +69,7 @@ pub enum ErrorCode {
     ArtifactMissing,
     ArtifactArchMismatch,
     ArtifactAmbiguous,
+    StrategyUnsupportedTarget,
     DeployBusy,
     DeployCancelled,
     DeployUploadFailed,
@@ -79,7 +80,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 21] = [
+    pub const ALL: [ErrorCode; 22] = [
         ErrorCode::ProtocolMismatch,
         ErrorCode::ProfileUnresolved,
         ErrorCode::ProfileUnsupportedProxy,
@@ -94,6 +95,7 @@ impl ErrorCode {
         ErrorCode::ArtifactMissing,
         ErrorCode::ArtifactArchMismatch,
         ErrorCode::ArtifactAmbiguous,
+        ErrorCode::StrategyUnsupportedTarget,
         ErrorCode::DeployBusy,
         ErrorCode::DeployCancelled,
         ErrorCode::DeployUploadFailed,
@@ -120,6 +122,7 @@ impl ErrorCode {
             ErrorCode::ArtifactMissing => "artifact.missing",
             ErrorCode::ArtifactArchMismatch => "artifact.arch-mismatch",
             ErrorCode::ArtifactAmbiguous => "artifact.ambiguous",
+            ErrorCode::StrategyUnsupportedTarget => "strategy.unsupported-target",
             ErrorCode::DeployBusy => "deploy.busy",
             ErrorCode::DeployCancelled => "deploy.cancelled",
             ErrorCode::DeployUploadFailed => "deploy.upload-failed",
@@ -218,6 +221,12 @@ impl ErrorCode {
                 remediation: "deploySingleArtifact",
                 summary: "The target produces multiple artifacts; the single-artifact rule applies in the MVP.",
             },
+            StrategyUnsupportedTarget => ErrorDef {
+                phase: Some(Inspect),
+                retriable: false,
+                remediation: "selectSupportedStrategy",
+                summary: "The selected strategy's required target interface is unavailable.",
+            },
             DeployBusy => ErrorDef {
                 phase: Some(Deploy),
                 retriable: true,
@@ -262,7 +271,6 @@ impl ErrorCode {
             },
         }
     }
-
 }
 
 /// A structured failure. Frontends render from `code`; the rest is context for

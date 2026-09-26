@@ -6,7 +6,7 @@ use serde::Serialize;
 /// JSON-RPC application error code used for structured Betelgeuz failures.
 pub const APPLICATION_ERROR_CODE: i64 = -32000;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct RpcError {
     pub code: i64,
     pub message: String,
@@ -14,7 +14,7 @@ pub struct RpcError {
     pub data: Option<RpcErrorData>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcErrorData {
     pub code: String,

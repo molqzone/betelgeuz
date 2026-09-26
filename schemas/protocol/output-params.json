@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OutputParams",
+  "type": "object",
+  "properties": {
+    "attachId": {
+      "type": "string"
+    },
+    "bytes": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0
+      }
+    },
+    "stream": {
+      "$ref": "#/$defs/OutputStream"
+    }
+  },
+  "required": [
+    "attachId",
+    "stream",
+    "bytes"
+  ],
+  "$defs": {
+    "OutputStream": {
+      "type": "string",
+      "enum": [
+        "stdout",
+        "stderr"
+      ]
+    }
+  }
+}

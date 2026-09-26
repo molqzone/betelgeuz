@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TargetOverrides",
+  "description": "Workspace-scoped values that override a named profile when populated.",
+  "type": "object",
+  "properties": {
+    "boardId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "credentialRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deviceId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "host": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hostKey": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "keepaliveSeconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "port": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "profile": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "proxyChain": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/ProxyHopProfile"
+      }
+    },
+    "socId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "username": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ProxyHopProfile": {
+      "description": "One configured jump host. Every hop has its own credential reference and\npinned SSH host key; arbitrary proxy commands are not accepted.",
+      "type": "object",
+      "properties": {
+        "credentialRef": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "hostKey": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 22,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "username",
+        "credentialRef",
+        "hostKey"
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperationResult",
+  "type": "object",
+  "properties": {
+    "operationId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId"
+  ]
+}

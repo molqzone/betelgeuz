@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LogsResult",
+  "type": "object",
+  "properties": {
+    "chunks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OutputChunk"
+      }
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "chunks"
+  ],
+  "$defs": {
+    "OutputChunk": {
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          }
+        },
+        "stream": {
+          "$ref": "#/$defs/OutputStream"
+        }
+      },
+      "required": [
+        "stream",
+        "bytes"
+      ]
+    },
+    "OutputStream": {
+      "type": "string",
+      "enum": [
+        "stdout",
+        "stderr"
+      ]
+    }
+  }
+}

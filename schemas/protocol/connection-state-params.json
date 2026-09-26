@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConnectionStateParams",
+  "type": "object",
+  "properties": {
+    "attachId": {
+      "type": "string"
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/$defs/ConnectionState"
+    }
+  },
+  "required": [
+    "attachId",
+    "state"
+  ],
+  "$defs": {
+    "ConnectionState": {
+      "description": "Connection state of an attach. Each state may carry an optional `lastError`\ncatalog code at the API level; failure is a presentation decision, not a\nseparate state.",
+      "type": "string",
+      "enum": [
+        "disconnected",
+        "connecting",
+        "attached",
+        "reconnecting"
+      ]
+    }
+  }
+}

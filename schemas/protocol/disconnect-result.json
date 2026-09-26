@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DisconnectResult",
+  "type": "object",
+  "properties": {
+    "state": {
+      "$ref": "#/$defs/ConnectionState"
+    }
+  },
+  "required": [
+    "state"
+  ],
+  "$defs": {
+    "ConnectionState": {
+      "description": "Connection state of an attach. Each state may carry an optional `lastError`\ncatalog code at the API level; failure is a presentation decision, not a\nseparate state.",
+      "type": "string",
+      "enum": [
+        "disconnected",
+        "connecting",
+        "attached",
+        "reconnecting"
+      ]
+    }
+  }
+}
