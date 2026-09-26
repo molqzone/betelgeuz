@@ -39,6 +39,7 @@ target.
 - Add the `linux.remoteproc` deploy strategy for small-core firmware workspaces whose target exposes the standard interface. It is introduced in Phase 3. Vendor small-core control mechanisms, including Rockchip mailbox control and the Canaan K230 loader, are future strategies behind the same contract.
 - Keep strategy-specific configuration and target validation inside each strategy.
 - Reuse the same build-artifact-to-attach workflow for application and firmware projects, each deploying its own artifact.
+- Add a serial-console transport as a peer of the SSH transport, staged: **S1** attaches a serial console as a read-only log and descriptor source, driving login and prompt handling without mutations; **S2** adds deploy, structured exec, and lifecycle over the console shell, with file transfer through base64 staging or ZMODEM. Console automation is expect-style and is the least robust part of the system by nature. Its arrival is the rule-of-two trigger to widen the transport trait (`SshTransport` → `TargetTransport`, `Endpoint::{Ssh, Serial}`, pins as an enum); serial attach identity is the documented downgrade described under target resolution.
 
 ### Deferred
 
@@ -146,7 +147,7 @@ Lichee RVNano running a supported vendor or community Linux image is the sole Ti
 
 The initial board contract should be explicit and small:
 
-- The board is reachable through the configured SSH target profile. The profile contains a DNS name, fixed IP address, or another directly reachable endpoint managed by Betelgeuz.
+- The board is reachable through the configured SSH target profile or, as a follow-on, a serial console. The profile contains a DNS name, fixed IP address, or another directly reachable endpoint managed by Betelgeuz; a serial profile names a port and baud rate.
 - SSH listens on a configurable port, initially `22`.
 - The configured user has SFTP access and permission to replace and execute the remote artifact.
 - The board has a stable SSH host key.
@@ -161,7 +162,7 @@ The initial board contract should be explicit and small:
 
 After connection, the Target Identity Service reads the hardware descriptor once and stores it with the attach status. The selected strategy then queries only the target state it needs. The `remoteproc` strategy inspects its configured instance and firmware controls; the SSH application strategy checks its remote path and process controls. Board/SoC information is available for identity and diagnostics, but it is not used to gate attach creation or build a global capability inventory.
 
-Endpoint resolution alone is not sufficient for identifying multiple boards. A stable `deviceId` is preferred; when it is unavailable, a pinned SSH host key plus the configured endpoint is the minimum attach identity.
+Endpoint resolution alone is not sufficient for identifying multiple boards. A stable `deviceId` is preferred; when it is unavailable, a pinned SSH host key plus the configured endpoint is the minimum attach identity. A serial-console connection presents no host key: its attach identity is a pinned `deviceId` where available, otherwise an explicit user confirmation of the port binding — an accepted, documented downgrade from the SSH transport's cryptographic guarantee.
 
 ### Linux userspace runtime contract
 
@@ -666,7 +667,7 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 ### Resolved record
 
 - Host platforms: the first release supports **Windows and Linux** development hosts. `betelgeuz-core` is built and tested per platform (win32-x64 and linux-x64 first), shipped inside the VSIX, with the platform-specific surface limited to packaging, credential storage, and process management.
-- Core and transport: a Rust `betelgeuz-core` with exactly one transport, `russh`. There is no external SSH client, configuration parser, agent integration, or fallback transport; unsupported authentication or proxy capabilities fail with explicit diagnostics. Remote - SSH extension internals are not a supported dependency. Betelgeuz owns target profiles, credentials, host-key pins, and proxy configuration.
+- Core and transport: a Rust `betelgeuz-core` with exactly one transport for the MVP, `russh`; the serial-console transport is a planned follow-on peer (see the follow-on capability area), not a second SSH client. There is no external SSH client, configuration parser, agent integration, or fallback transport; unsupported authentication or proxy capabilities fail with explicit diagnostics. Remote - SSH extension internals are not a supported dependency. Betelgeuz owns target profiles, credentials, host-key pins, and proxy configuration.
 - Run modes: `foreground` plus `service` mode against a unit provisioned on the target. A PID-file launcher and board-side helpers remain deferred, and a custom detached launcher must persist an unambiguous process identity before it can support stop or status operations.
 - Configuration model: two layers — a shareable user-level `betelgeuz.profiles` entry holding the direct SSH endpoint, credential reference, and identity pins, and workspace-scoped `betelgeuz.attach.*` / `betelgeuz.deploy.*` keys. The key list is owned by `protocol::config`; implemented strategy keys use the full strategy ID as their prefix. The first small-core strategy uses `betelgeuz.attach.linux.remoteproc.instance` and `betelgeuz.attach.linux.remoteproc.firmwarePath`.
 - Artifact and firmware validation: host-side format and architecture checks (ELF header parsing or a declared raw binary), with the instance identified by its `name` and the target profile pins; ELF metadata and declared format/size checks only — a board-provided manifest is deferred.
@@ -700,5 +701,6 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - A custom detached process launcher and a narrowly scoped target-side privilege helper. Trigger: a target that needs process survival beyond foreground/service modes, or a non-root image that cannot use the published sudo whitelist. Both remain behind their seams: process identity recording and the privilege runner.
 - Additional small-core deploy strategies for vendor control mechanisms, such as mailbox-based control in the Rockchip family or vendor loaders like the Canaan K230's. Trigger: a board profile that needs small-core control through one of them. Each is a new strategy behind the common contract with its own configuration keys, error-code namespace, and target validation; the remoteproc strategy never emulates them. Until implemented, these boards are not Tier 1 and those strategies are not offered.
 - Dynamic strategy loading: third-party strategies as loadable modules or WASM components. Trigger: strategy demand beyond the core's own implementations. The registry metadata is the seam; the MVP registry is compile-time.
+- Serial debug: GDB's native serial RSP would share the console line with shell traffic; the line-exclusivity handoff design is deferred. Trigger: debug demand on serial-only boards.
 - Multi-file deploy: deploying an application together with shared libraries or configuration files as one operation. Trigger: a real application workspace that needs several files deployed together. A manifest-style deploy contract would be designed then.
 - Publishing protocol JSON Schema artifacts. Trigger: a third-party frontend or the published `betelgeuz-protocol` facade consumes them. Until then the schemas are build artifacts under `target/schema/`, following rust-analyzer, which keeps only Rust types plus a human-readable protocol reference in the repository.
