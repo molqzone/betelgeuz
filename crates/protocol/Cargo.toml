@@ -1,0 +1,7 @@
+[package]
+name = "protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Single source of truth for the betelgeuz JSON-RPC protocol, configuration schema, and hardware descriptor schema. Internal workspace crate; a published facade for third-party frontends would ship as `betelgeuz-protocol`."

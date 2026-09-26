@@ -1,0 +1,14 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Standalone CLI harness over the core, for scripting and for editors without a dedicated adapter."
+
+[[bin]]
+name = "betelgeuz"
+path = "src/main.rs"
+
+[dependencies]
+protocol = { path = "../protocol" }

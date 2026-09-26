@@ -5,14 +5,27 @@
       "type": "npm",
       "script": "compile",
       "problemMatcher": "$tsc",
-      "label": "npm: compile"
+      "label": "npm: compile",
+      "options": {
+        "cwd": "${workspaceFolder}/editors/code"
+      }
     },
     {
       "type": "npm",
       "script": "watch",
       "problemMatcher": "$tsc-watch",
       "isBackground": true,
-      "label": "npm: watch"
+      "label": "npm: watch",
+      "options": {
+        "cwd": "${workspaceFolder}/editors/code"
+      }
+    },
+    {
+      "label": "cargo: check core",
+      "type": "shell",
+      "command": "cargo check --workspace",
+      "problemMatcher": "$rustc",
+      "group": "build"
     }
   ]
 }

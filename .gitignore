@@ -3,6 +3,4 @@ out/
 .vscode-test/
 *.vsix
 *.tsbuildinfo
-PLAN.md
-plan.md
-plan.mdMD
+target/

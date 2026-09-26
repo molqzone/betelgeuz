@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/betelgeuz",
+    "crates/transport",
+    "crates/strategy",
+    "crates/cli",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "TODO: molqzone remote URL"
+
+# Intended dependencies. Member crates adopt them with `workspace = true` as
+# implementation lands (Phase 0 onward); unused entries are not fetched.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "time"] }
+thiserror = "2"
+anyhow = "1"
+# russh: pin the current version at implementation time.
+# schemars: pin at implementation time (protocol/config schema export).
