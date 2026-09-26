@@ -7,8 +7,9 @@
 
 use std::io::{self, BufRead, Write};
 
+use errors::{BetelgeuzError, ErrorCode};
 use protocol::{
-    error::RpcError,
+    error::{RpcError, RpcErrorData},
     methods::{self, InitializeParams, InitializeResult},
     negotiate,
 };
@@ -101,8 +102,26 @@ fn initialize_response(id: Value, params: Value) -> Value {
             })
             .expect("InitializeResult serializes"),
         ),
-        Err(err) => error_response(id, RpcError::application(&err)),
+        Err(err) => {
+            let error = BetelgeuzError::new(ErrorCode::ProtocolMismatch)
+                .with_detail(err.to_string());
+            error_response(id, application_error(&error))
+        }
     }
+}
+
+fn application_error(err: &BetelgeuzError) -> RpcError {
+    RpcError::application(
+        err.to_string(),
+        RpcErrorData {
+            code: err.code.to_string(),
+            phase: err.phase.as_str().to_string(),
+            retriable: err.retriable,
+            remediation: err.remediation.to_string(),
+            target_state: err.target_state.clone(),
+            detail: err.detail.clone(),
+        },
+    )
 }
 
 fn result_response(id: Value, result: Value) -> Value {
@@ -163,6 +182,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(response["error"]["data"]["code"], "protocol.mismatch");
+        assert_eq!(
+            response["error"]["data"]["remediation"],
+            "upgradeFrontend"
+        );
     }
 
     #[test]

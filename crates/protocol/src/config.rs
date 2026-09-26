@@ -13,7 +13,7 @@ pub const TARGET_PROFILE: &str = "betelgeuz.target.profile";
 pub const TARGET_INLINE_PREFIX: &str = "betelgeuz.target.";
 
 /// The deploy strategy selected for this workspace, e.g. `linux.ssh-app`.
-pub const ATTACH_BACKEND: &str = "betelgeuz.attach.backend";
+pub const ATTACH_STRATEGY: &str = "betelgeuz.attach.strategy";
 
 /// Prefix shared by all attach configuration keys.
 pub const ATTACH_PREFIX: &str = "betelgeuz.attach.";
@@ -43,6 +43,7 @@ mod tests {
 
     #[test]
     fn strategy_keys_are_namespaced() {
+        assert_eq!(ATTACH_STRATEGY, "betelgeuz.attach.strategy");
         assert_eq!(
             strategy_key("linux.remoteproc", "instance"),
             "betelgeuz.attach.linux.remoteproc.instance"

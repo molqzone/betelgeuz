@@ -6,7 +6,8 @@ Attach-and-deploy tooling for embedded Linux development: a headless local contr
 
 ```text
 crates/
-├── protocol/     # JSON-RPC protocol, error catalog, config & descriptor schemas (single source of truth)
+├── protocol/     # JSON-RPC wire contract, config & descriptor schemas
+├── errors/       # common core errors and metadata shared with strategies
 ├── betelgeuz/    # headless core binary `betelgeuz-core`: stdio JSON-RPC server, attach identity, deploy pipeline
 ├── transport/    # SshTransport trait, the single russh implementation, test fake
 ├── strategy/     # deploy strategy contract, registry (detection predicates), shared pipeline

@@ -10,16 +10,16 @@ everything else is kept coherent.
 | --- | --- | --- |
 | `docs/PLAN.md` | architecture + decision record (the *why*) | updated when a decision or contract changes; section text is normative, §12 is the decision log with triggers |
 | `docs/dev/*.md` | living developer guides (the *how*) | one audience, one task per document; short; changed in the same commit as the code |
-| `docs/ERRORS.md` | generated from the error catalog | never hand-edited (`cargo xtask gen-errors`) |
+| `docs/ERRORS.md` | generated from common core and strategy error definitions | never hand-edited (`cargo xtask gen-errors`) |
 | `docs/protocol.md`, `schemas/` | generated from the `protocol` crate | never hand-edited (`cargo xtask gen-schema`) |
 | `README.md` | entry point | links outward; never duplicates content that lives elsewhere |
 | crate/module rustdoc | contract summary at each boundary | every crate's `lib.rs` states what it owns and what it forbids; `TODO(Phase X)` markers tie code to plan phases |
 
 ## Rules
 
-1. **Generated docs are derived, never edited.** If `docs/ERRORS.md`, the
-   protocol doc, or a schema is wrong, fix the source in the `protocol` crate
-   and regenerate.
+1. **Generated docs are derived, never edited.** If `docs/ERRORS.md` is wrong,
+   fix the owning definition in `errors` or the strategy crate and regenerate.
+   Protocol schemas and types come from `protocol`.
 2. **Decisions live in the plan; guides live in `docs/dev`.** A new open choice
    goes to plan §12 in the right block (blocking / spike / deferred with a
    trigger). A resolved choice is recorded in §12's resolved record and is not
@@ -57,7 +57,7 @@ Phase 0 is exploratory: tests protect boundaries and contracts, not coverage.
 
 ## Naming
 
-- **Workspace crates are short single words** (`protocol`, `transport`,
+- **Workspace crates are short single words** (`protocol`, `errors`, `transport`,
   `strategy`, `cli`, `xtask`, `betelgeuz`), rust-analyzer style. They are
   internal (`publish = false`); if a crate is ever published for third-party
   frontends, it ships under a namespaced name (`betelgeuz-protocol`).

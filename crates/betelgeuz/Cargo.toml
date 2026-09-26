@@ -12,4 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 protocol = { path = "../protocol" }
+errors = { path = "../errors" }
+transport = { path = "../transport" }
+strategy = { path = "../strategy" }
 serde_json.workspace = true

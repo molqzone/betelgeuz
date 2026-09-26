@@ -315,13 +315,18 @@ Strategies and services fail with structured errors, never with free-form user-f
 
 Three rules keep the model from drifting:
 
-- The core's error enum is the single source of truth: every code carries its phase, retriability, and remediation. `docs/ERRORS.md` is generated from or test-verified against that enum, and frontends consume plain code strings over the JSON-RPC protocol. A code without a remediation entry fails the build.
+- Common core errors are defined in the `errors` crate; each strategy owns definitions for its namespaced errors. Every definition carries its phase, retriability, and a stable remediation action ID. `docs/ERRORS.md` is generated from the common and strategy catalogs, and frontends map codes and action IDs to presentation. The protocol crate carries only the wire envelope.
 - Each contract method declares the set of codes it can return as its error type, and contract tests assert them. Common codes (`ssh.*`, `deploy.*`, `identity.*`, `artifact.*`) are shared by all strategies; strategy-specific codes are namespaced per strategy (`rproc.*` for `linux.remoteproc`, with similar namespaces for future small-core strategies) and pass through with strategy-provided remediation.
 - Unexpected failures collapse to `internal.unexpected` with the failed phase carried along. Notifications never show raw stack traces; the full cause goes to the OutputChannel under a correlation id.
 
+The table below shows human-readable action descriptions. The JSON-RPC
+`remediation` field carries a stable action ID that each frontend maps to its
+own commands and wording. Frontend-only failures, such as a missing DAP
+extension, remain local to that frontend and do not enter the core catalog.
+
 The initial catalog:
 
-| code | phase | meaning | remediation | retriable |
+| code | phase | meaning | user-facing action | retriable |
 | --- | --- | --- | --- | --- |
 | `protocol.mismatch` | config | frontend and core speak incompatible protocol versions | upgrade one side | no |
 | `profile.unresolved` | profile | target profile not found or incomplete | check the Betelgeuz profile settings | no |
@@ -350,14 +355,13 @@ The initial catalog:
 | `rproc.crashed` | lifecycle | core crashed; carries kernel log tail | `Restore` the previous version | no |
 | `rproc.state-timeout` | lifecycle | state wait timed out; carries last observed state | inspect trace output | yes |
 | `debug.gdbserver-missing` | debug | `gdbserver` absent on the target | install `gdbserver` (or copy a transient static one) | no |
-| `debug.adapter-missing` | debug | frontend DAP integration missing (CodeLLDB in the VS Code frontend) | install the debug adapter | no |
 | `runtime.service-manager-missing` | lifecycle | configured service mode has no supported systemd unit or manager | use foreground mode or provision the unit | no |
 | `runtime.orphan-risk` | lifecycle | foreground disconnect policy cannot prove process termination | use service mode or run explicit cleanup | no |
 | `internal.unexpected` | any | unexpected failure; carries phase and cause | show log | no |
 
 Error presentation follows Remote-SSH semantics that users already know: failures are labelled by phase (resolve profile, connect, authenticate, verify identity, deploy, lifecycle, debug — mirroring Remote-SSH's resolve/connect/authenticate/start-server labels); retriable failures show bounded reconnect attempts and stop on explicit disconnect; every surfaced error offers a path to the log with the raw transport output; host-key prompts show the fingerprint and are never auto-accepted. The classic SSH failure patterns users recognize from Remote-SSH output — permission denied, connection refused or timed out, host key verification failed, too many authentication failures — map onto the `ssh.*` codes above; because the transport is `russh`, that mapping lives at the transport boundary over library error events instead of parsing `ssh(1)` output.
 
-Phase 0 delivers the core error enum as the single source of truth, the `docs/ERRORS.md` table generated or verified from it, the remediation action map (code to frontend action), per-method error sets in the strategy trait signatures, the transport error mapping, and the tests enforcing catalog/docs synchronization and per-method assertions.
+Phase 0 delivers common core error definitions, strategy-owned namespaced error definitions, the generated `docs/ERRORS.md` catalog, the frontend remediation action map, per-method error sets in the strategy trait signatures, transport error mapping, and catalog/docs synchronization checks.
 
 ### Debug provider contract
 
@@ -449,7 +453,7 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Adopt `russh` as the single MVP transport implementation; there is no external SSH client, configuration parser, agent integration, or fallback transport.
 - Define the Betelgeuz-owned target profile schema, credential references, host-key enrollment, and supported typed proxy chain.
 - Verify private-key loading and passphrase handling through the frontend's protected credential store on each supported host platform.
-- Define package commands, configuration schema, and the error catalog from the error model below (the core error enum as the single source of truth, `docs/ERRORS.md` generated or test-verified from it).
+- Define package commands, configuration schema, common core error definitions, and strategy-owned error catalogs (`docs/ERRORS.md` is generated from both owners).
 - Define the attach-object and strategy contract, configuration schema, and normalized artifact record.
 - Define the SSH target profile, hardware descriptor, and attach identity schemas.
 - Define the Linux userspace runtime probe and compatibility record: machine, ELF ABI/class,

@@ -8,8 +8,8 @@
 
 // TODO(Phase 0): `SshTransport` trait — exec / SFTP / port-forward channels
 // over one session, connection state and reconnect events, host-key
-// verification hooks, and the transport-boundary error mapping onto the
-// protocol error catalog. Then the russh implementation and the test fake.
+// verification hooks, and mapping transport failures to common core error
+// definitions. Then the russh implementation and the test fake.
 
 /// Marker for the transport layer boundary; the trait lands in Phase 0.
 pub struct TransportPlaceholder;
