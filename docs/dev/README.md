@@ -10,16 +10,15 @@ everything else is kept coherent.
 | --- | --- | --- |
 | `docs/PLAN.md` | architecture + decision record (the *why*) | updated when a decision or contract changes; section text is normative, §12 is the decision log with triggers |
 | `docs/dev/*.md` | living developer guides (the *how*) | one audience, one task per document; short; changed in the same commit as the code |
-| `docs/ERRORS.md` | generated from common core and strategy error definitions | never hand-edited (`cargo xtask gen-errors`) |
-| `docs/protocol.md` | generated protocol reference (JSON Schema files are build artifacts under `target/schema/`, not repository content) | never hand-edited (`cargo xtask gen-schema`) |
-| `editors/code/src/protocol.ts` | generated from protocol and strategy JSON Schemas | never hand-edited (`cargo xtask gen-ts`) |
+| `docs/ERRORS.md` | generated from common core and strategy error definitions | never hand-edited (`npm run gen:errors`) |
+| `src/protocol/` | typed request/result vocabulary (the former wire contract) | hand-maintained; shapes pinned by snapshot tests |
 | `README.md` | entry point | links outward; never duplicates content that lives elsewhere |
-| crate/module rustdoc | contract summary at each boundary | every crate's `lib.rs` states what it owns and what it forbids; `TODO(Phase X)` markers tie code to plan phases |
+| module doc comments | contract summary at each boundary | every module states what it owns and what it forbids; `TODO(Phase X)` markers tie code to plan phases |
 
 ## Rules
 
 1. **Generated docs are derived, never edited.** If `docs/ERRORS.md` is wrong,
-   fix the owning definition in `errors` or the strategy crate and regenerate.
+   fix the owning definition in the error catalog or the strategy module and regenerate.
    Protocol schemas and types come from `protocol`.
 2. **Decisions live in the plan; guides live in `docs/dev`.** A new open choice
    goes to plan §12 in the right block (blocking / spike / deferred with a
@@ -31,7 +30,7 @@ everything else is kept coherent.
 4. **Language: English**, for all repository docs, code comments, and commit
    messages.
 5. **Comments explain *why*, not *what*.** Prose that belongs to a contract
-   goes in the plan or a crate's rustdoc, not into scattered inline narration.
+   goes in the plan or a module's doc comment, not into scattered inline narration.
 6. **New vocabulary gets a definition before first use.** The defined terms are
    attach, role, strategy, pipeline, commit point, pin, detection predicate;
    new terms are added to the plan's terminology section (see
@@ -58,10 +57,11 @@ against these rules; they are enforced by review and by the checklist at the bot
    debug provider); the code creates the indirection when the second implementation lands,
    not when the first is written.
 3. **No empty containers.** No registry/factory/manager holding things that do not exist
-   yet, no `Arc<dyn _>` collections with fewer than two members, no enum variants that no
-   code path produces.
-4. **A crate exists to enforce dependency direction or produce a separate artifact.** If
-   its contents would compile fine as a module, it is a module.
+   yet, no polymorphic registries with fewer than two implementations, no union
+   variants that no code path produces.
+4. **A boundary exists to enforce dependency direction.** Core modules never import
+   VS Code APIs or surface-layer code; anything that does not need that separation is
+   just another module.
 5. **Data may lead, indirection may not.** Wire types, config keys, and catalog entries are
    contract data: they may land before the code that serves them, following the plan's
    method table. Traits, registries, generic slots, and provider indirections land with
@@ -73,41 +73,38 @@ against these rules; they are enforced by review and by the checklist at the bot
 
 ## Testing
 
-Run `cargo verify` for Rust formatting, Clippy, workspace tests, generated
-artifact freshness, and dependency-layer checks. CI runs the same command and
-also checks for unused Cargo dependencies with `cargo machete`. The VS Code
-extension is checked with `npm ci && npm run check` from `editors/code`.
+Run `npm run check` for type checking, `npm test` for the unit suite (vitest),
+and the `npm run gen:*` scripts to refresh generated artifacts — review their
+diffs before accepting them.
 
 Phase 0 is exploratory: tests protect boundaries and contracts, not coverage.
 
 - **Test** three kinds of thing: anti-drift assertions over generated artifacts
-  and wire formats (catalog ↔ `docs/ERRORS.md`, config key shapes, serialized
-  shapes), pure function boundaries (framing, encode/decode, version
-  negotiation), and regressions for bugs actually caught.
+  and serialized shapes (catalog ↔ `docs/ERRORS.md`, config key shapes, request
+  and result shapes), pure function boundaries (encode/decode, validation), and
+  regressions for bugs actually caught.
 - **Do not test** shapes that are still in flux (request params and the
   strategy contract get their contract tests when the contract freezes),
   tautologies the type system already guarantees, or what the code obviously
-  does. Lint-level checks belong in lints, not in `#[test]`.
+  does. Lint-level checks belong in lints, not in tests.
 - **Business-flow tests are deliverables of the phase that implements the
   flow** (see plan §9), not accompaniments to skeleton code.
-- **Wire shapes are pinned with `expect![[...]]` snapshots** (expect-test), not
-  hand-picked field assertions: a partial assertion stays green when a field is
-  added, renamed, or dropped. `UPDATE_EXPECT=1 cargo test` rewrites the expected
-  blocks, turning every shape change into a reviewable diff of the test itself.
-- **The integration-test boundary** (`crates/*/tests/` plus a support harness)
-  is created with the first slow test — a real SSH server or a spawned core in
-  Phase 1 — not before.
-- Run `cargo xtask gen-errors --check`, `cargo xtask gen-schema --check`, and
-  `cargo xtask gen-ts --check` to verify generated artifacts without rewriting
-  them.
+- **Serialized shapes are pinned with snapshots**, not hand-picked field
+  assertions: a partial assertion stays green when a field is added, renamed,
+  or dropped. The runner's update mode (`npm test -- -u`) rewrites the
+  snapshots, turning every shape change into a reviewable diff of the test
+  itself.
+- **The integration-test boundary** (`test/` plus a support harness) is created
+  with the first slow test — a real SSH server in Phase 1 — not before.
+- Run `npm run gen:errors -- --check` to verify generated artifacts without
+  rewriting them.
 
 ## Naming
 
-- **Workspace crates are short single words** (`protocol`, `errors`, `transport`,
-  `strategy`, `xtask`, `betelgeuz`), rust-analyzer style. They are
-  internal (`publish = false`); if a crate is ever published for third-party
-  frontends, it ships under a namespaced name (`betelgeuz-protocol`).
-- **Product binaries keep full names**: `betelgeuz-core` (the headless core).
+- **Modules are short single words** (`protocol`, `errors`, `transport`,
+  `strategy`, `service`, `profile`); nothing here is published as a package,
+  so no external name collisions matter.
+- **Product names keep full form**: the extension is `betelgeuz`.
 - **Names are plain and descriptive.** Prefer what a thing is
   (`deploy pipeline`, `session manager`) over pattern vocabulary; suffixes like
   `Factory` or `Impl` are used only when they mean exactly that.
