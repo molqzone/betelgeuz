@@ -488,22 +488,30 @@ fn default_log_limit() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use expect_test::expect;
 
     #[test]
-    fn initialize_params_round_trip() {
+    fn initialize_params_wire_shape_is_pinned() {
         let params = InitializeParams {
             protocol_version: "0.1.0".into(),
             frontend: "vscode".into(),
             capabilities: vec!["debug".into()],
         };
-        let json = serde_json::to_string(&params).unwrap();
-        assert!(json.contains("protocolVersion"));
+        let json = serde_json::to_string_pretty(&params).unwrap();
+        expect![[r#"
+            {
+              "protocolVersion": "0.1.0",
+              "frontend": "vscode",
+              "capabilities": [
+                "debug"
+              ]
+            }"#]].assert_eq(&json);
         let back: InitializeParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back.frontend, "vscode");
     }
 
     #[test]
-    fn artifact_record_serializes_the_host_path_and_integrity_metadata() {
+    fn artifact_record_wire_shape_is_pinned() {
         let record = ArtifactRecord {
             path: "/build/app".into(),
             target_name: "app".into(),
@@ -512,20 +520,24 @@ mod tests {
             content_hash: "sha256:abc".into(),
             symbols_path: Some("/build/app.debug".into()),
         };
-        let json = serde_json::to_value(&record).unwrap();
-        assert_eq!(json["targetName"], "app");
-        assert_eq!(json["contentHash"], "sha256:abc");
-        assert_eq!(json["symbolsPath"], "/build/app.debug");
+        let json = serde_json::to_string_pretty(&record).unwrap();
+        expect![[r#"
+            {
+              "path": "/build/app",
+              "targetName": "app",
+              "configuration": "Debug",
+              "size": 128,
+              "contentHash": "sha256:abc",
+              "symbolsPath": "/build/app.debug"
+            }"#]].assert_eq(&json);
         assert_eq!(
-            serde_json::from_value::<ArtifactRecord>(json).unwrap(),
+            serde_json::from_str::<ArtifactRecord>(&json).unwrap(),
             record
         );
     }
 
     #[test]
     fn cancellation_and_progress_are_notifications_using_lsp_methods() {
-        assert_eq!(CANCEL, "$/cancelRequest");
-        assert_eq!(PROGRESS, "$/progress");
         assert!(!REQUESTS.contains(&CANCEL));
         assert!(NOTIFICATIONS.contains(&CANCEL));
         assert!(NOTIFICATIONS.contains(&PROGRESS));
@@ -534,9 +546,6 @@ mod tests {
             id: ProgressToken::String("request-1".into()),
         })
         .unwrap();
-        assert_eq!(cancel["id"], "request-1");
-        assert!(cancel.get("requestId").is_none());
-
         let progress = serde_json::to_value(ProgressParams {
             token: ProgressToken::Integer(7),
             value: ProgressValue::Begin {
@@ -547,8 +556,24 @@ mod tests {
             },
         })
         .unwrap();
-        assert_eq!(progress["token"], 7);
-        assert_eq!(progress["value"]["kind"], "begin");
+        let wire = format!(
+            "{}\n{}",
+            serde_json::to_string_pretty(&cancel).unwrap(),
+            serde_json::to_string_pretty(&progress).unwrap()
+        );
+        expect![[r#"
+            {
+              "id": "request-1"
+            }
+            {
+              "token": 7,
+              "value": {
+                "cancellable": true,
+                "kind": "begin",
+                "percentage": 10,
+                "title": "Deploy"
+              }
+            }"#]].assert_eq(&wire);
     }
 
     #[test]

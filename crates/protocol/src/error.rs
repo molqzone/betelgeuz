@@ -50,9 +50,10 @@ impl RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use expect_test::expect;
 
     #[test]
-    fn application_error_serializes_machine_readable_metadata() {
+    fn application_error_wire_shape_is_pinned() {
         let error = RpcError::application(
             "betelgeuz.ssh.lost: connection dropped",
             RpcErrorData {
@@ -65,8 +66,17 @@ mod tests {
             },
         );
         let value = serde_json::to_value(error).unwrap();
-        assert_eq!(value["data"]["code"], "ssh.lost");
-        assert_eq!(value["data"]["remediation"], "retry");
-        assert_eq!(value["data"]["detail"], "eof");
+        expect![[r#"
+            {
+              "code": -32000,
+              "data": {
+                "code": "ssh.lost",
+                "detail": "eof",
+                "phase": "connect",
+                "remediation": "retry",
+                "retriable": true
+              },
+              "message": "betelgeuz.ssh.lost: connection dropped"
+            }"#]].assert_eq(&serde_json::to_string_pretty(&value).unwrap());
     }
 }

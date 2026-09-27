@@ -254,7 +254,6 @@ mod tests {
     use protocol::config::{ProfileCatalog, TargetOverrides};
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
-    use tokio::io::BufReader;
     use transport::fake::FakeSshTransport;
 
     const PIN: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -373,62 +372,38 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_stdio_routes_attach_and_disconnect_through_the_core_service() {
-        let mut input = Vec::new();
-        crate::rpc::write_message(
-            &mut input,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "betelgeuz/attach",
-                "params": {
-                    "catalog": {},
-                    "target": {
-                        "host": "board.local",
-                        "username": "root",
-                        "credentialRef": "board",
-                        "hostKey": PIN
-                    },
-                    "strategyId": "linux.ssh-app",
-                    "credentialSecrets": { "board": { "password": "one-use-secret" } }
-                }
-            }),
+        let responses = crate::rpc::run_messages(
+            &mut CoreService::new(FakeSshTransport::new()),
+            vec![
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "betelgeuz/attach",
+                    "params": {
+                        "catalog": {},
+                        "target": {
+                            "host": "board.local",
+                            "username": "root",
+                            "credentialRef": "board",
+                            "hostKey": PIN
+                        },
+                        "strategyId": "linux.ssh-app",
+                        "credentialSecrets": { "board": { "password": "one-use-secret" } }
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "betelgeuz/disconnect",
+                    "params": { "attachId": "attach-1" }
+                }),
+            ],
         )
-        .await
-        .unwrap();
-        crate::rpc::write_message(
-            &mut input,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "betelgeuz/disconnect",
-                "params": { "attachId": "attach-1" }
-            }),
-        )
-        .await
-        .unwrap();
-        let mut reader = BufReader::new(std::io::Cursor::new(input));
-        let mut output = Vec::new();
-        let mut service = CoreService::new(FakeSshTransport::new());
+        .await;
 
-        crate::rpc::serve(&mut reader, &mut output, &mut service)
-            .await
-            .unwrap();
-
-        let mut responses = BufReader::new(std::io::Cursor::new(output));
-        let attached = crate::rpc::read_message(&mut responses)
-            .await
-            .unwrap()
-            .unwrap();
-        let disconnected = crate::rpc::read_message(&mut responses)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(attached["result"]["state"], "attached");
-        assert_eq!(disconnected["result"]["state"], "disconnected");
-        assert!(!attached.to_string().contains("one-use-secret"));
-        assert!(crate::rpc::read_message(&mut responses)
-            .await
-            .unwrap()
-            .is_none());
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["result"]["state"], "attached");
+        assert_eq!(responses[1]["result"]["state"], "disconnected");
+        assert!(!responses[0].to_string().contains("one-use-secret"));
     }
 }

@@ -13,3 +13,4 @@ serde_json.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+expect-test = "1.5.1"

@@ -41,13 +41,18 @@ pub struct VerifiedTargetIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use expect_test::expect;
 
     #[test]
-    fn parses_partial_descriptor() {
+    fn partial_descriptor_keeps_missing_fields_unknown() {
         let json = r#"{"deviceId":"abc-123","socId":"rk3506","model":"my-board"}"#;
         let d: HardwareDescriptor = serde_json::from_str(json).unwrap();
-        assert_eq!(d.device_id.as_deref(), Some("abc-123"));
-        assert_eq!(d.board_revision, None);
+        expect![[r#"
+            {
+              "deviceId": "abc-123",
+              "socId": "rk3506",
+              "model": "my-board"
+            }"#]].assert_eq(&serde_json::to_string_pretty(&d).unwrap());
     }
 
     #[test]

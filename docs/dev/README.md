@@ -85,6 +85,13 @@ Phase 0 is exploratory: tests protect boundaries and contracts, not coverage.
   does. Lint-level checks belong in lints, not in `#[test]`.
 - **Business-flow tests are deliverables of the phase that implements the
   flow** (see plan §9), not accompaniments to skeleton code.
+- **Wire shapes are pinned with `expect![[...]]` snapshots** (expect-test), not
+  hand-picked field assertions: a partial assertion stays green when a field is
+  added, renamed, or dropped. `UPDATE_EXPECT=1 cargo test` rewrites the expected
+  blocks, turning every shape change into a reviewable diff of the test itself.
+- **The integration-test boundary** (`crates/*/tests/` plus a support harness)
+  is created with the first slow test — a real SSH server or a spawned core in
+  Phase 1 — not before.
 - Run `cargo xtask gen-errors --check`, `cargo xtask gen-schema --check`, and
   `cargo xtask gen-ts --check` to verify generated artifacts without rewriting
   them.

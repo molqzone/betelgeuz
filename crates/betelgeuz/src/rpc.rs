@@ -333,6 +333,29 @@ fn error_response(id: Value, error: RpcError) -> Value {
     message
 }
 
+/// Test support: run framed messages through the full serve loop and collect
+/// every framed response. One helper, not a fixture language — grow it only
+/// when a second test shape needs more.
+#[cfg(test)]
+pub(crate) async fn run_messages<H: RequestHandler>(
+    service: &mut H,
+    messages: Vec<Value>,
+) -> Vec<Value> {
+    let mut input = Vec::new();
+    for message in &messages {
+        write_message(&mut input, message).await.unwrap();
+    }
+    let mut reader = tokio::io::BufReader::new(std::io::Cursor::new(input));
+    let mut output = Vec::new();
+    serve(&mut reader, &mut output, service).await.unwrap();
+    let mut responses = tokio::io::BufReader::new(std::io::Cursor::new(output));
+    let mut collected = Vec::new();
+    while let Some(response) = read_message(&mut responses).await.unwrap() {
+        collected.push(response);
+    }
+    collected
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
