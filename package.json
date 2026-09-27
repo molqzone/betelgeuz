@@ -34,11 +34,15 @@
     "compile": "tsc -p ./",
     "watch": "tsc -p ./ --watch",
     "check": "tsc -p ./ --noEmit",
-    "package": "npm run compile"
+    "package": "npm run compile",
+    "test": "vitest run",
+    "gen:errors": "tsx scripts/gen-errors.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.95.0",
-    "typescript": "^5.7.2"
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
   }
 }
