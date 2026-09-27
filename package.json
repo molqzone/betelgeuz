@@ -15,9 +15,6 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:betelgeuz.helloWorld"
-  ],
   "main": "./out/extension.js",
   "extensionKind": [
     "ui"

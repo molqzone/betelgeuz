@@ -2,7 +2,7 @@
 // The boundary rules (Surface Law, S2) are enforced by src/boundaries.test.ts.
 import tseslint from "typescript-eslint";
 
-export default tseslint.config(
+export default [
   ...tseslint.configs.recommendedTypeChecked,
   {
     languageOptions: {
@@ -18,5 +18,5 @@ export default tseslint.config(
   },
   {
     ignores: ["out/**", "node_modules/**", "scripts/**", "eslint.config.mjs"],
-  }
-);
+  },
+];
