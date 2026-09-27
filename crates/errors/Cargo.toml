@@ -1,7 +1,0 @@
-[package]
-name = "errors"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish = false
-description = "Core error definitions and strategy-extensible error metadata."

@@ -1,43 +1,48 @@
 # Betelgeuz
 
-Attach-and-deploy tooling for embedded Linux development: a headless local control core (`betelgeuz-core`, Rust) with editor adapters — a VS Code extension first, with Zed and Neovim/Vim frontends planned. Everything lives in one monorepo, following the rust-analyzer layout.
+Attach-and-deploy tooling for embedded Linux development, as a VS Code
+extension: it binds an already-built artifact (CMake Tools stays the build
+owner) to a verified target board over SSH and owns deploy, lifecycle, and
+debug-endpoint management for that binding.
+
+- The board needs only `sshd` and SFTP — no VS Code Server, no board-side agent.
+- Betelgeuz never triggers a build; it consumes the artifact CMake Tools
+  produced.
+- One attach per workspace: a verified board identity (host-key pin plus
+  hardware descriptor) bound to a deploy strategy — `linux.ssh-app` for big-core
+  application workspaces, `linux.remoteproc` for small-core firmware
+  workspaces. Several workspaces can share one physical board through a shared
+  target profile.
+- Host-centric debugging: `gdbserver` on the target over an SSH forward,
+  debugger and symbols on the host (CodeLLDB).
+- Structured error catalog with phase-labelled, actionable diagnostics.
 
 ## Layout
 
 ```text
-crates/
-├── protocol/     # JSON-RPC wire contract, config & descriptor schemas
-├── errors/       # common core errors and metadata shared with strategies
-├── betelgeuz/    # headless core binary `betelgeuz-core`: stdio JSON-RPC server, attach identity, deploy pipeline
-├── transport/    # SshTransport trait and test fake (russh implementation lands in Phase 1)
-├── strategy/     # deploy strategy contract and strategy-owned config keys
-editors/
-└── code/         # VS Code extension (the first frontend adapter)
-xtask/            # cargo xtask: gen-schema / gen-errors / gen-ts / package
+src/            # the extension: VS Code surface + core modules
 docs/
-├── PLAN.md       # architecture, contracts, error model, phases, decisions
-└── dev/          # developer guides: documentation & naming conventions
+├── PLAN.md     # architecture, contracts, error model, phases, decisions
+├── ERRORS.md   # generated from the error catalog — do not edit
+└── dev/        # developer guides: conventions and policy
 ```
 
-## What it does
-
-- Connects to target boards over SSH; the board needs only `sshd` and SFTP — no VS Code Server, no board-side agent.
-- Consumes the artifact already built by CMake Tools and deploys it; Betelgeuz never triggers a build.
-- One attach per workspace: a verified board identity (host-key pin plus hardware descriptor) bound to a deploy strategy. Strategies are peers in a registry — `linux.ssh-app` (application) and `linux.remoteproc` (small-core firmware) first — selected by role × board detection (a recognized K230 binds its loader strategy, a remoteproc board binds `linux.remoteproc`). Several workspaces can share one physical board through a shared target profile.
-- Host-centric debugging: `gdbserver` on the target over an SSH forward, debugger and symbols on the host (CodeLLDB in the VS Code frontend).
-- Structured error catalog with phase-labelled, actionable diagnostics.
+The core modules (profile resolution, identity, attach, transport, deploy
+pipeline, strategies) never import VS Code APIs; the surface layer adds
+commands, status UI, CMake Tools integration, and the DAP launch.
 
 ## Development
 
-Implementation starts at Phase 0 of the plan.
-
 ```text
-cargo check --workspace     # core
-cd editors/code && npm install && npm run compile
+npm install
+npm run check
 ```
 
-Open the repository root in VS Code and press `F5` to launch the Extension Development Host.
+Press `F5` in VS Code to launch the Extension Development Host.
 
 ## Documentation
 
-- [Plan](docs/PLAN.md) — goals, architecture, contracts, error model, phases, and the decision record.
+- [Plan](docs/PLAN.md) — goals, architecture, contracts, error model, phases,
+  and the decision record.
+- [Development guide](docs/dev/README.md) — documentation, naming, abstraction,
+  and testing policy.

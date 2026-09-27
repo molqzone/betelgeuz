@@ -2,9 +2,9 @@
 
 ## 1. Project Goal
 
-Develop Betelgeuz as a headless local control core with editor adapters, initially a VS Code extension, for attach-and-deploy embedded Linux development. Lichee RVNano is the sole Tier 1 board; other boards are future support targets. CMake Tools remains the workspace's build owner and produces the selected target artifact; Betelgeuz consumes that existing artifact through the active attach object and manages the target lifecycle. Separate workspaces can use the same flow with different deploy strategies, such as SSH application deployment for a Linux userspace workspace and Linux `remoteproc` for a small-core firmware workspace. The core protocol must also support future Zed and Neovim/Vim frontends without duplicating SSH or deployment logic.
+Develop Betelgeuz as a VS Code extension for attach-and-deploy embedded Linux development. Lichee RVNano is the sole Tier 1 board; other boards are future support targets. CMake Tools remains the workspace's build owner and produces the selected target artifact; Betelgeuz consumes that existing artifact through the active attach object and manages the target lifecycle. Separate workspaces can use the same flow with different deploy strategies, such as SSH application deployment for a Linux userspace workspace and Linux `remoteproc` for a small-core firmware workspace. The target-control logic lives in modules that never import VS Code APIs, so it stays unit-testable and reviewable; VS Code is the only supported frontend.
 
-North star: Betelgeuz is not a build system, a remote IDE, a board manager, or an SSH frontend. It is a local target-control core that binds an existing build artifact to a verified target through a selected deployment strategy, and owns deployment, target lifecycle, and debug endpoint management for that binding.
+North star: Betelgeuz is not a build system, a remote IDE, a board manager, or an SSH frontend. It is a target-control layer inside the VS Code extension that binds an existing build artifact to a verified target through a selected deployment strategy, and owns deployment, target lifecycle, and debug endpoint management for that binding.
 
 The extension must not require VS Code Server on the target board and must not use `Remote - SSH` as its execution model. It may follow the familiar remote-target workflow of remembered profiles, host-key verification, and reconnect behavior; that similarity applies only to connection management, not to running a remote VS Code extension host.
 
@@ -15,7 +15,7 @@ The Microsoft `Remote - SSH` extension is not a Betelgeuz runtime dependency. It
 ### MVP includes
 
 - Integration with the active CMake Tools workspace and its already-built target artifact.
-- A local Rust `betelgeuz-core` process with a versioned JSON-RPC protocol over stdio; the VS Code extension is its first frontend adapter.
+- A TypeScript core module layer inside the extension: profile resolution, identity, attach, deploy pipeline, and strategies behind strict module boundaries, with no VS Code API imports in the core modules.
 - SSH target profile resolution using a Betelgeuz-managed host, port, user, credential reference, and host-key pin.
 - Secure hardware descriptor reading after SSH identity verification, with explicit handling for targets that have no stable board ID.
 - SSH connection management with keepalive and automatic reconnect.
@@ -39,7 +39,7 @@ target.
 - Add the `linux.remoteproc` deploy strategy for small-core firmware workspaces whose target exposes the standard interface. It is introduced in Phase 3. Vendor small-core control mechanisms, including Rockchip mailbox control and the Canaan K230 loader, are future strategies behind the same contract.
 - Keep strategy-specific configuration and target validation inside each strategy.
 - Reuse the same build-artifact-to-attach workflow for application and firmware projects, each deploying its own artifact.
-- Add a serial-console transport as a peer of the SSH transport, staged: **S1** attaches a serial console as a read-only log and descriptor source, driving login and prompt handling without mutations; **S2** adds deploy, structured exec, and lifecycle over the console shell, with file transfer through base64 staging or ZMODEM. Library choice: the `serialport` crate (the mature cross-platform option with honest Windows support, pinning the version at implementation time) with a per-port reader thread bridged into tokio channels — serial bandwidth does not warrant an async adapter layer. The console driver itself (login and prompt matching, echo suppression, timeouts) and explicit DTR/RTS control — opening a port must not reset the board — are ours to write and are the least robust part of the system by nature. Its arrival is the rule-of-two trigger to widen the transport trait (`SshTransport` → `TargetTransport`, `Endpoint::{Ssh, Serial}`, pins as an enum); serial attach identity is the documented downgrade described under target resolution.
+- Add a serial-console transport as a peer of the SSH transport, staged: **S1** attaches a serial console as a read-only log and descriptor source, driving login and prompt handling without mutations; **S2** adds deploy, structured exec, and lifecycle over the console shell, with file transfer through base64 staging or ZMODEM. Library choice: the `serialport` npm package (the mature cross-platform option with honest Windows support, pinned at implementation time) with a per-port reader bridged into the event layer — serial bandwidth does not warrant anything fancier. The console driver itself (login and prompt matching, echo suppression, timeouts) and explicit DTR/RTS control — opening a port must not reset the board — are ours to write and are the least robust part of the system by nature. Its arrival is the rule-of-two trigger to widen the transport interface (`SshTransport` → `TargetTransport`, endpoint and pin shapes as discriminated unions); serial attach identity is the documented downgrade described under target resolution.
 
 ### Deferred
 
@@ -54,30 +54,23 @@ target.
 ## 3. Proposed Architecture
 
 ```text
-Editor frontend
-  ├─ VS Code extension (initial)
-  ├─ Zed adapter (future)
-  ├─ Neovim/Vim adapter (future)
-  └─ Versioned JSON-RPC client over stdio
-
-Local betelgeuz-core (Rust)
-  ├─ Configuration and SSH target profile resolver
-  ├─ Target Identity Service
-  ├─ Attach Manager
-  ├─ Strategy registry (contract, config schema, target validation)
-  ├─ SSH Session Manager (`russh`)
-  │   ├─ Exec channels
-  │   ├─ SFTP transport
-  │   └─ Port-forward channels
-  ├─ Artifact and Deploy Controller
-  ├─ Host-side Debug Provider Controller
-  ├─ Application deploy strategy (`linux.ssh-app`)
-  └─ Small-core deploy strategy (`linux.remoteproc`, added in Phase 3)
-
-VS Code-only adapter services
-  ├─ CMake Tools artifact integration
-  ├─ VS Code Commands / Status UI
-  └─ VS Code Debug Adapter launch integration
+VS Code extension host (TypeScript, single process)
+  ├─ VS Code surface: Commands / Status UI / OutputChannel
+  ├─ CMake Tools artifact integration (resolves the already-built artifact)
+  ├─ Debug launcher (CodeLLDB DAP configuration and session)
+  └─ Core modules (no VS Code API imports; strict boundaries)
+      ├─ Configuration and SSH target profile resolver
+      ├─ Target Identity Service
+      ├─ Attach Manager
+      ├─ Strategy registry (contract, config schema, target validation)
+      ├─ SSH Session Manager (`ssh2`)
+      │   ├─ Exec channels
+      │   ├─ SFTP transfer
+      │   └─ Port-forward channels
+      ├─ Artifact and Deploy Controller
+      ├─ Host-side Debug Provider Controller
+      ├─ Application deploy strategy (`linux.ssh-app`)
+      └─ Small-core deploy strategy (`linux.remoteproc`, added in Phase 3)
 
 Local machine
   ├─ CMake Tools
@@ -92,15 +85,15 @@ Target board
   └─ Application or configured strategy runtime
 ```
 
-The SSH transport should be owned by one session manager in the Rust core behind a Betelgeuz-owned `SshTransport` trait. Upload, command execution, and log streaming should use separate channels over one SSH session rather than sharing one interactive shell. The manager must expose connection state and reconnect events to the JSON-RPC API and deployment services. Betelgeuz ships exactly one production transport for the MVP: the Rust `russh` implementation, with SFTP and forwarding support provided by the selected compatible Rust crates or a small core-owned adapter. There is no dependency on a local `ssh` executable and no runtime dependency on the Remote - SSH extension. The trait exists so tests can substitute a fake transport; it is not a user-selectable production plugin point. The trait grows with demand: it starts as one narrow trait holding only the methods the first implementation needs, and splits into more focused traits only when a second implementation or real concurrency forces it — never into a speculatively layered trait hierarchy. Authentication and proxy capabilities that the selected `russh` implementation cannot express, such as unsupported key providers or proxy modes, are explicit unsupported cases that fail with a clear diagnostic; they are never silently delegated to another client.
+The SSH transport should be owned by one session manager behind a core-owned `SshTransport` interface. Upload, command execution, and log streaming should use separate channels over one SSH session rather than sharing one interactive shell. The manager must expose connection state and reconnect events to the service layer and the UI. Betelgeuz ships exactly one production transport for the MVP: the Node `ssh2` implementation, which keeps one connection and opens separate exec, SFTP, and forwarding channels. There is no dependency on a local `ssh` executable and no runtime dependency on the Remote - SSH extension. The interface exists so tests can substitute a fake transport; it is not a user-selectable production plugin point. The interface grows with demand: it starts as one narrow interface holding only the methods the first implementation needs, and splits into more focused interfaces only when a second implementation or real concurrency forces it — never into a speculatively layered interface hierarchy. Authentication and proxy capabilities that `ssh2` cannot express, such as unsupported key providers or proxy modes, are explicit unsupported cases that fail with a clear diagnostic; they are never silently delegated to another client.
 
-The serialized profile and workspace override records live in the `protocol` crate. The core profile resolver overlays non-empty workspace values on the selected user profile, validates the endpoint, and returns an opaque credential reference; a separate core credential provider loads its secret material. It does not parse external SSH configuration, import external known-host databases, invoke an external SSH client, or depend on an SSH agent. The transport accepts resolved credentials and a required host-key pin, and must verify that pin before exposing a session. The cached attach identity contains the endpoint, verified host-key fingerprint, and descriptor. Frontend-held passwords and passphrases cross stdio only as one-use sensitive values, are redacted from debug output, and are zeroized when dropped.
+The serialized profile and workspace override records live in the typed config module. The profile resolver overlays non-empty workspace values on the selected user profile, validates the endpoint, and returns an opaque credential reference; a separate credential provider loads its secret material. It does not parse external SSH configuration, import external known-host databases, invoke an external SSH client, or depend on an SSH agent. The transport accepts resolved credentials and a required host-key pin, and must verify that pin before exposing a session. The cached attach identity contains the endpoint, verified host-key fingerprint, and descriptor. Secrets are one-use sensitive wrappers: redacted in debug output and wiped on release — in TypeScript this is encapsulation and review discipline rather than a type-level guarantee.
 
-The MVP authentication paths are a private-key reference resolved by the core and a password or passphrase held by the frontend's SecretStorage integration. Host keys are pinned or explicitly enrolled in Betelgeuz's own profile store; an unknown host key never becomes trusted implicitly. Proxy chaining, if required, is represented by a typed Betelgeuz profile and implemented by `russh`; unsupported proxy forms fail with the explicit `profile.unsupported-proxy` diagnostic. The core never reads or writes external SSH configuration, agent sockets, or known-host files.
+The MVP authentication paths are a private-key reference resolved by the core and a password or passphrase held by VS Code SecretStorage. Host keys are pinned or explicitly enrolled in Betelgeuz's own profile store; an unknown host key never becomes trusted implicitly. Proxy chaining, if required, is represented by a typed Betelgeuz profile and implemented by `ssh2`; unsupported proxy forms fail with the explicit `profile.unsupported-proxy` diagnostic. The core never reads or writes external SSH configuration, agent sockets, or known-host files.
 
-The core exposes a versioned JSON-RPC protocol over stdio. The protocol is JSON-RPC 2.0 with LSP-style message framing and a 16 MiB maximum JSON body, following the rust-analyzer precedent of a Rust core serving multiple editor frontends over stdio; the VS Code adapter reuses the `vscode-jsonrpc` connection library, product method names are namespaced (`betelgeuz/*`), and cancellation and progress follow the LSP `$/cancelRequest` and `$/progress` patterns. Artifact bytes never cross the RPC channel — the core transfers them over SFTP itself; requests carry artifact records and paths only. Requests cover target profile resolution, attach/connect, artifact handoff, deploy and lifecycle operations, logs/status, and debug-provider preparation. Notifications carry connection state, target state, progress, output, and structured errors. The protocol is editor-neutral: the VS Code adapter adds CMake Tools and VS Code UI integration, while future adapters supply their editor-specific commands, artifact paths, DAP clients, and presentation.
+The core modules expose typed async service interfaces; the request and result shapes are the single typed vocabulary (they were the wire contract before the pivot to a single process, and `src/protocol/` keeps them as plain interfaces). Cancellation is carried through every operation, and notifications — connection state, target state, progress, output, structured errors — arrive as typed events. The boundary is editor-free by discipline: the surface adds CMake Tools and VS Code UI integration, while the core modules stay importable from tests without VS Code.
 
-The frontend/core boundary is strict. Frontends do not open SSH connections, parse target descriptors, construct remote commands, implement deploy strategies, or manage debug endpoint cleanup. The core does not depend on VS Code, Zed, Vim, a DAP client, or a particular build frontend. An artifact request contains a local path, target name, configuration, and optional symbols path; the core validates and deploys that record but never invokes a build command.
+The module boundary is strict. The VS Code surface does not open SSH connections, parse target descriptors, construct remote commands, implement deploy strategies, or manage debug endpoint cleanup. The core modules do not depend on VS Code APIs, a DAP client, or a particular build frontend. An artifact record contains a local path, target name, configuration, and optional symbols path; the deploy controller validates and deploys that record but never invokes a build command.
 
 Debug is host-centric. Betelgeuz keeps the host-side debugger (LLDB through CodeLLDB in the initial VS Code frontend), debug adapter, symbols, launch configuration, breakpoint state, and user interaction on the development host. The target supplies only the smallest debug endpoint required by the selected provider, preferably started for the current session over SSH and removed when the session ends. This follows the Black Magic design principle of keeping debug intelligence and symbols on the host; it does not require a Black Magic probe or a target-side permanent service.
 
@@ -323,14 +316,14 @@ Strategies and services fail with structured errors, never with free-form user-f
 
 Three rules keep the model from drifting:
 
-- Common core errors are defined in the `errors` crate; each strategy owns definitions for its namespaced errors. Every definition carries its phase, retriability, and a stable remediation action ID. `docs/ERRORS.md` is generated from the common and strategy catalogs, and frontends map codes and action IDs to presentation. The protocol crate carries only the wire envelope.
+- Common core errors are defined in one catalog module; each strategy owns definitions for its namespaced errors. Every definition carries its phase, retriability, and a stable remediation action ID. `docs/ERRORS.md` is generated from the common and strategy catalogs, and the UI maps codes and action IDs to presentation.
 - Each contract method declares the set of codes it can return as its error type, and contract tests assert them. Common codes (`ssh.*`, `deploy.*`, `identity.*`, `artifact.*`) are shared by all strategies; strategy-specific codes are namespaced per strategy (`rproc.*` for `linux.remoteproc`, with similar namespaces for future small-core strategies) and pass through with strategy-provided remediation.
 - Unexpected failures collapse to `internal.unexpected` with the failed phase carried along. Notifications never show raw stack traces; the full cause goes to the OutputChannel under a correlation id.
 
-The table below shows human-readable action descriptions. The JSON-RPC
-`remediation` field carries a stable action ID that each frontend maps to its
-own commands and wording. Frontend-only failures, such as a missing DAP
-extension, remain local to that frontend and do not enter the core catalog.
+The table below shows human-readable action descriptions. The error
+`remediation` field carries a stable action ID that the UI layer maps to its
+own commands and wording. UI-only failures, such as a missing DAP
+extension, remain local to the surface and do not enter the catalog.
 
 The initial catalog:
 
@@ -367,7 +360,7 @@ The initial catalog:
 | `runtime.orphan-risk` | lifecycle | foreground disconnect policy cannot prove process termination | use service mode or run explicit cleanup | no |
 | `internal.unexpected` | any | unexpected failure; carries phase and cause | show log | no |
 
-Error presentation follows Remote-SSH semantics that users already know: failures are labelled by phase (resolve profile, connect, authenticate, verify identity, deploy, lifecycle, debug — mirroring Remote-SSH's resolve/connect/authenticate/start-server labels); retriable failures show bounded reconnect attempts and stop on explicit disconnect; every surfaced error offers a path to the log with the raw transport output; host-key prompts show the fingerprint and are never auto-accepted. The classic SSH failure patterns users recognize from Remote-SSH output — permission denied, connection refused or timed out, host key verification failed, too many authentication failures — map onto the `ssh.*` codes above; because the transport is `russh`, that mapping lives at the transport boundary over library error events instead of parsing `ssh(1)` output.
+Error presentation follows Remote-SSH semantics that users already know: failures are labelled by phase (resolve profile, connect, authenticate, verify identity, deploy, lifecycle, debug — mirroring Remote-SSH's resolve/connect/authenticate/start-server labels); retriable failures show bounded reconnect attempts and stop on explicit disconnect; every surfaced error offers a path to the log with the raw transport output; host-key prompts show the fingerprint and are never auto-accepted. The classic SSH failure patterns users recognize from Remote-SSH output — permission denied, connection refused or timed out, host key verification failed, too many authentication failures — map onto the `ssh.*` codes above; because the transport is `ssh2`, that mapping lives at the transport boundary over library error events instead of parsing `ssh(1)` output.
 
 Phase 0 delivers common core error definitions, strategy-owned namespaced error definitions, the generated `docs/ERRORS.md` catalog, the frontend remediation action map, per-method error sets in the strategy trait signatures, transport error mapping, and catalog/docs synchronization checks.
 
@@ -454,11 +447,11 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 
 ### Phase 0: Core and protocol decisions
 
-- Define the Rust `betelgeuz-core` process boundary and versioned JSON-RPC-over-stdio protocol.
+- Define the core-module boundary and the typed service interfaces (the former wire-contract shapes).
 - Follow the documentation and naming conventions in `docs/dev/README.md`: living guides under `docs/dev`, generated docs via `cargo xtask`, and defined vocabulary before first use.
 - Define the editor adapter boundary; keep CMake Tools and VS Code UI integration in the VS Code adapter.
-- Define the Rust `SshTransport` trait and profile-resolution boundary.
-- Adopt `russh` as the single MVP transport implementation; there is no external SSH client, configuration parser, agent integration, or fallback transport.
+- Define the `SshTransport` interface and profile-resolution boundary.
+- Adopt `ssh2` as the single MVP transport implementation; there is no external SSH client, configuration parser, agent integration, or fallback transport.
 - Define the Betelgeuz-owned target profile schema, credential references, host-key enrollment, and supported typed proxy chain.
 - Verify private-key loading and passphrase handling through the frontend's protected credential store on each supported host platform.
 - Define package commands, configuration schema, common core error definitions, and strategy-owned error catalogs (`docs/ERRORS.md` is generated from both owners).
@@ -475,16 +468,15 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Define how CMake Tools target selection and artifact paths map into the common workflow.
 - Create a fake SSH transport for tests.
 
-### Phase 0.5: Core process bootstrap
+### Phase 0.5: Extension bootstrap
 
-- Build and package `betelgeuz-core` for the supported host platforms: win32-x64 and linux-x64 first, extending the matrix as needed.
-- Let the VS Code adapter start, monitor, and shut down the core child process.
-- Add protocol version negotiation, request cancellation, structured errors, and crash/restart handling.
-- Keep the core scriptable over stdio JSON-RPC from the start: a shell pipe is the early harness. No product CLI is planned — see the resolved record.
+- Scaffold the VS Code extension and wire commands, status UI, and the OutputChannel to the core modules.
+- Service calls carry cancellation and structured errors end to end; the catalog-to-presentation mapping lives in the UI layer.
+- Keep the core modules callable from unit tests without VS Code: the fake transport and direct service calls are the harness. No product CLI is planned — see the resolved record.
 
 ### Phase 1: SSH profile MVP
 
-- Resolve a workspace-selected Betelgeuz SSH profile in the Rust core and perform reachability checks.
+- Resolve a workspace-selected Betelgeuz SSH profile in the profile module and perform reachability checks.
 - Load only Betelgeuz-managed credentials and host-key pins.
 - Read and validate the target hardware descriptor after SSH host-key verification.
 - Bind the descriptor to the workspace attach object using configured identity pins.
@@ -501,7 +493,7 @@ First working slice acceptance: from the VS Code adapter, `Connect` → host-key
 
 ### Phase 2: CMake artifact integration
 
-- Let the VS Code adapter resolve the active CMake target and already-built artifact path, then send the normalized artifact record to the Rust core. Other frontends provide the same record through their own build integration or configuration. Resolution is API-first with the File API codemodel as fallback.
+- Resolve the active CMake target and already-built artifact path through the CMake Tools API, then hand the normalized artifact record to the deploy controller. The record shape keeps build-system neutrality; only CMake Tools is in scope. Resolution is API-first with the File API codemodel as fallback.
 - Add the standalone `Deploy` command; Deploy must not trigger a build.
 - Support a workspace-level deployment profile for different binaries or boards.
 - Add cancellation and clear failure reporting for artifact resolution and deploy.
@@ -539,7 +531,7 @@ First working slice acceptance: from the VS Code adapter, `Connect` → host-key
 - Map the CMake executable and local debug symbols into the selected host-side debugger configuration.
 - Clean up target endpoints, port forwards, and provider-owned resources when a debug session ends, disconnects, or the frontend or core shuts down.
 
-The Rust core owns debug endpoint and SSH-forward lifecycle. The frontend owns only its editor-specific DAP launch or debug-session presentation. A frontend disconnect must be propagated to the core so temporary target resources are cleaned up.
+The debug controller owns target-endpoint and forward lifecycle; the VS Code surface owns only the DAP launch and session presentation. A window shutdown must reach the controller so temporary target resources are cleaned up.
 
 ### Phase 7: Optimization
 
@@ -552,7 +544,7 @@ The Rust core owns debug endpoint and SSH-forward lifecycle. The frontend owns o
 
 ### Unit tests
 
-- JSON-RPC request validation, protocol version negotiation, cancellation, notifications, and structured error mapping.
+- Service request validation, cancellation, and structured error mapping.
 - SSH profile resolution, credential loading, host-key enrollment, typed proxy validation, and endpoint validation.
 - Reconnect backoff, retry limits, and cancellation timing.
 - Hardware descriptor parsing, missing-field handling, identity pin matching, and host-key mismatch.
@@ -575,7 +567,7 @@ The Rust core owns debug endpoint and SSH-forward lifecycle. The frontend owns o
 
 ### Integration tests
 
-- Start the Rust core from the VS Code adapter, complete protocol negotiation, and recover from a core process crash or restart.
+- Extension integration: commands reach the service modules and surface attach state and errors end to end.
 - Fake SSH/SFTP server for upload, permission, and command execution.
 - Fake CMake Tools adapter for artifact resolution.
 - CMake Tools API unavailable or absent: the File API fallback and the clear `artifact.missing`
@@ -641,10 +633,10 @@ The Rust core owns debug endpoint and SSH-forward lifecycle. The frontend owns o
 
 The MVP is complete when a developer can:
 
-1. The VS Code adapter starts `betelgeuz-core` and negotiates the JSON-RPC protocol without installing VS Code Server on the board.
+1. The extension activates and connects to a supported board without installing VS Code Server on the board.
 2. Select or configure an SSH target profile and connect to a supported board.
 3. Complete SSH identity verification and see the target descriptor, including known board/SoC fields or explicit unknown values.
-4. Open a local CMake project and send an already-built artifact record from CMake Tools to the core.
+4. Open a local CMake project and hand an already-built artifact record from CMake Tools to the deploy pipeline.
 5. Run `Deploy` and see that existing artifact deployed by the active strategy without an implicit rebuild.
 6. Start, stop, and restart the active target through the selected strategy.
 7. See remote stdout and stderr in the VS Code output panel.
@@ -666,10 +658,10 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 
 ### Resolved record
 
-- Host platforms: the first release supports **Windows and Linux** development hosts. `betelgeuz-core` is built and tested per platform (win32-x64 and linux-x64 first), shipped inside the VSIX, with the platform-specific surface limited to packaging, credential storage, and process management.
-- Core and transport: a Rust `betelgeuz-core` with exactly one transport for the MVP, `russh`; the serial-console transport is a planned follow-on peer (see the follow-on capability area), not a second SSH client. There is no external SSH client, configuration parser, agent integration, or fallback transport; unsupported authentication or proxy capabilities fail with explicit diagnostics. Remote - SSH extension internals are not a supported dependency. Betelgeuz owns target profiles, credentials, host-key pins, and proxy configuration.
+- Host platforms: **Windows and Linux** development hosts. The extension is pure TypeScript with no per-platform binaries; the platform surface lives in the `ssh2` and (follow-on) `serialport` libraries.
+- Core and transport: a TypeScript core module layer with exactly one transport for the MVP, `ssh2`; the serial-console transport is a planned follow-on peer (`serialport`, see the follow-on capability area), not a second SSH client. There is no external SSH client, configuration parser, agent integration, or fallback transport; unsupported authentication or proxy capabilities fail with explicit diagnostics. Remote - SSH extension internals are not a supported dependency. Betelgeuz owns target profiles, credentials, host-key pins, and proxy configuration.
 - Run modes: `foreground` plus `service` mode against a unit provisioned on the target. A PID-file launcher and board-side helpers remain deferred, and a custom detached launcher must persist an unambiguous process identity before it can support stop or status operations.
-- Configuration model: two layers — a shareable user-level `betelgeuz.profiles` entry holding the direct SSH endpoint, credential reference, and identity pins, and workspace-scoped `betelgeuz.attach.*` / `betelgeuz.deploy.*` keys. The key list is owned by `protocol::config`; implemented strategy keys use the full strategy ID as their prefix. The first small-core strategy uses `betelgeuz.attach.linux.remoteproc.instance` and `betelgeuz.attach.linux.remoteproc.firmwarePath`.
+- Configuration model: two layers — a shareable user-level `betelgeuz.profiles` entry holding the direct SSH endpoint, credential reference, and identity pins, and workspace-scoped `betelgeuz.attach.*` / `betelgeuz.deploy.*` keys. The key list is owned by the config module (`src/protocol/config`); implemented strategy keys use the full strategy ID as their prefix. The first small-core strategy uses `betelgeuz.attach.linux.remoteproc.instance` and `betelgeuz.attach.linux.remoteproc.firmwarePath`.
 - Artifact and firmware validation: host-side format and architecture checks (ELF header parsing or a declared raw binary), with the instance identified by its `name` and the target profile pins; ELF metadata and declared format/size checks only — a board-provided manifest is deferred.
 - Artifact selection: no staleness detection — Deploy consumes the build owner's output as-is. The MVP applies the exactly-one rule per target and fails multi-artifact targets with `artifact.ambiguous`; multi-artifact selection through `betelgeuz.deploy.artifact` is scheduled for Phase 7 (Optimization).
 - Privilege model: a root SSH account or the documented `NOPASSWD` sudo whitelist Betelgeuz publishes; privileged commands are fixed templates with no interpolated user input. A target-side helper remains deferred behind a privilege runner seam.
@@ -682,7 +674,7 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
   the public contract.
 - Debug adapter: the VS Code frontend binds CodeLLDB (`vadimcn.vscode-lldb`) as its DAP integration and maps the core's debugger-agnostic configuration to a `lldb` launch configuration (`target create` plus `gdb-remote` over the core's port forward). CodeLLDB covers all three RSP flows — application `gdbserver`, firmware GDB stubs, and OpenOCD-based probes — and satisfies the selection criteria: permissive licensing, maintained releases, and source-path mapping (via `target.source-map` where needed). The core stays debugger-neutral; the Debug action appears only when the DAP integration is installed, and a board whose stub proves LLDB-incompatible would add a GDB-based adapter at the frontend layer with no core changes.
 
-- Frontends are editor adapters only (VS Code first; Zed and Neovim/Vim later). A product CLI is not part of the vision: the stdio protocol is the automation surface, and a CLI would only wrap `ssh`/`scp` for cases scripts already cover. The core stays scriptable over stdio for any future automation need.
+- VS Code is the only frontend. The editor-neutral core and the Zed/Neovim adapter plans are retracted (maintainer readability decides the substrate); the core modules keep VS Code APIs out of their imports for testability, not for portability. A product CLI is not part of the vision: the service layer is callable from tests, and a CLI would only wrap `ssh`/`scp` for cases scripts already cover.
 
 ### Phase 0 spikes (the experiment produces the choice)
 
@@ -703,4 +695,4 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Dynamic strategy loading: third-party strategies as loadable modules or WASM components. Trigger: strategy demand beyond the core's own implementations. The registry metadata is the seam; the MVP registry is compile-time.
 - Serial debug: GDB's native serial RSP would share the console line with shell traffic; the line-exclusivity handoff design is deferred. Trigger: debug demand on serial-only boards.
 - Multi-file deploy: deploying an application together with shared libraries or configuration files as one operation. Trigger: a real application workspace that needs several files deployed together. A manifest-style deploy contract would be designed then.
-- Publishing protocol JSON Schema artifacts. Trigger: a third-party frontend or the published `betelgeuz-protocol` facade consumes them. Until then the schemas are build artifacts under `target/schema/`, following rust-analyzer, which keeps only Rust types plus a human-readable protocol reference in the repository.
+- Publishing protocol JSON Schema artifacts. Trigger: a third-party frontend or the published `betelgeuz-protocol` facade consumes them. Until then the schemas are build artifacts, not repository content.

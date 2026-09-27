@@ -73,6 +73,11 @@ against these rules; they are enforced by review and by the checklist at the bot
 
 ## Testing
 
+Run `cargo verify` for Rust formatting, Clippy, workspace tests, generated
+artifact freshness, and dependency-layer checks. CI runs the same command and
+also checks for unused Cargo dependencies with `cargo machete`. The VS Code
+extension is checked with `npm ci && npm run check` from `editors/code`.
+
 Phase 0 is exploratory: tests protect boundaries and contracts, not coverage.
 
 - **Test** three kinds of thing: anti-drift assertions over generated artifacts
