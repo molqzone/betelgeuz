@@ -5,18 +5,14 @@
     "lib": [
       "ES2022"
     ],
-    "outDir": "out",
-    "rootDir": "src",
     "strict": true,
     "sourceMap": true,
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "exclude": [
-    "node_modules",
-    ".vscode-test"
-  ],
   "include": [
-    "src"
+    "src",
+    "scripts",
+    "vitest.config.ts"
   ]
 }

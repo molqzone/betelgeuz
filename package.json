@@ -28,7 +28,7 @@
     ]
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "tsc -p tsconfig.build.json",
     "watch": "tsc -p ./ --watch",
     "check": "tsc -p ./ --noEmit",
     "package": "npm run compile",
@@ -37,7 +37,7 @@
     "lint": "eslint src"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.4",
     "@types/vscode": "^1.95.0",
     "eslint": "^10.11.0",
     "tsx": "^4.23.15",
