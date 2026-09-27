@@ -153,7 +153,7 @@ export type PingResult = {
   "pong": boolean;
 };
 
-export type ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting" | "failed";
+export type ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting";
 
 type ResolveProfileParams_ProfileCatalog = Record<string, ResolveProfileParams_TargetProfile>;
 type ResolveProfileParams_ProxyHopProfile = {
@@ -222,6 +222,48 @@ export type ResolveProfileResult = {
   "profile": ResolveProfileResult_ResolvedProfile;
 };
 
+type InspectHostKeyParams_ProfileCatalog = Record<string, InspectHostKeyParams_TargetProfile>;
+type InspectHostKeyParams_ProxyHopProfile = {
+  "credentialRef": string;
+  "host": string;
+  "hostKey": string;
+  "port"?: number;
+  "username": string;
+};
+type InspectHostKeyParams_TargetOverrides = {
+  "boardId"?: string | null;
+  "credentialRef"?: string | null;
+  "deviceId"?: string | null;
+  "host"?: string | null;
+  "hostKey"?: string | null;
+  "keepaliveSeconds"?: number | null;
+  "port"?: number | null;
+  "profile"?: string | null;
+  "proxyChain"?: Array<InspectHostKeyParams_ProxyHopProfile> | null;
+  "socId"?: string | null;
+  "username"?: string | null;
+};
+type InspectHostKeyParams_TargetProfile = {
+  "boardId"?: string | null;
+  "credentialRef": string;
+  "deviceId"?: string | null;
+  "host": string;
+  "hostKey"?: string | null;
+  "keepaliveSeconds"?: number;
+  "port"?: number;
+  "proxyChain"?: Array<InspectHostKeyParams_ProxyHopProfile>;
+  "socId"?: string | null;
+  "username": string;
+};
+export type InspectHostKeyParams = {
+  "catalog": InspectHostKeyParams_ProfileCatalog;
+  "target": InspectHostKeyParams_TargetOverrides;
+};
+
+export type InspectHostKeyResult = {
+  "hostKeyFingerprint": string;
+};
+
 type AttachRequest_CredentialMaterial = {
   "passphrase"?: AttachRequest_SensitiveString | null;
   "password"?: AttachRequest_SensitiveString | null;
@@ -271,7 +313,7 @@ export type AttachRequest = {
 
 export type TargetOperation = "deploy" | "start" | "stop" | "restart" | "restorePrevious" | "logs" | "debugPrepare";
 
-type AttachResult_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting" | "failed";
+type AttachResult_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting";
 type AttachResult_HardwareDescriptor = {
   "boardId"?: string | null;
   "boardRevision"?: string | null;
@@ -312,7 +354,7 @@ export type AttachRef = {
   "attachId": string;
 };
 
-type DisconnectResult_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting" | "failed";
+type DisconnectResult_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting";
 export type DisconnectResult = {
   "state": DisconnectResult_ConnectionState;
 };
@@ -362,7 +404,7 @@ export type LogsResult = {
   "nextCursor"?: string | null;
 };
 
-type InspectResult_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting" | "failed";
+type InspectResult_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting";
 type InspectResult_HardwareDescriptor = {
   "boardId"?: string | null;
   "boardRevision"?: string | null;
@@ -435,7 +477,7 @@ export type ProgressValue = {
   "message"?: string | null;
 };
 
-type ConnectionStateParams_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting" | "failed";
+type ConnectionStateParams_ConnectionState = "disconnected" | "connecting" | "attached" | "reconnecting";
 export type ConnectionStateParams = {
   "attachId": string;
   "detail"?: string | null;
@@ -488,6 +530,7 @@ export const REQUEST_METHODS = [
   "betelgeuz/shutdown",
   "betelgeuz/ping",
   "betelgeuz/resolveProfile",
+  "betelgeuz/inspectHostKey",
   "betelgeuz/attach",
   "betelgeuz/disconnect",
   "betelgeuz/artifactHandoff",
@@ -519,6 +562,7 @@ export type RpcRequestParams = {
   "betelgeuz/shutdown": EmptyParams;
   "betelgeuz/ping": EmptyParams;
   "betelgeuz/resolveProfile": ResolveProfileParams;
+  "betelgeuz/inspectHostKey": InspectHostKeyParams;
   "betelgeuz/attach": AttachRequest;
   "betelgeuz/disconnect": AttachRef;
   "betelgeuz/artifactHandoff": ArtifactHandoffParams;
@@ -537,6 +581,7 @@ export type RpcRequestResults = {
   "betelgeuz/shutdown": null;
   "betelgeuz/ping": PingResult;
   "betelgeuz/resolveProfile": ResolveProfileResult;
+  "betelgeuz/inspectHostKey": InspectHostKeyResult;
   "betelgeuz/attach": AttachResult;
   "betelgeuz/disconnect": DisconnectResult;
   "betelgeuz/artifactHandoff": ArtifactHandoffResult;

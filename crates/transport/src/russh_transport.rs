@@ -7,7 +7,6 @@
 //! `profile.unsupported-proxy` rather than being silently ignored.
 
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex as StdMutex,
@@ -25,12 +24,12 @@ use russh::{
 use russh_sftp::client::SftpSession;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    sync::{broadcast, mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
 };
 
 use crate::{
-    ExecEvent, ExecHandle, ExecRequest, ForwardHandle, HostKeyFingerprint, OutputStream,
-    RemoteFileInfo, SessionEvent, SshConnectOptions, SshEndpoint, SshTransport,
+    ExecEvent, ExecHandle, ExecRequest, HostKeyFingerprint, OutputStream, RemoteFileInfo,
+    SessionLoss, SshConnectOptions, SshEndpoint, SshTransport,
 };
 
 /// Records the server key for fingerprinting and accepts the session only when
@@ -77,16 +76,16 @@ impl Handler for PinningHandler {
 pub struct RusshTransport {
     session: Arc<tokio::sync::Mutex<Option<client::Handle<PinningHandler>>>>,
     sftp: tokio::sync::Mutex<Option<SftpSession>>,
-    events: broadcast::Sender<SessionEvent>,
+    session_state: watch::Sender<Option<SessionLoss>>,
 }
 
 impl RusshTransport {
     pub fn new() -> Self {
-        let (events, _) = broadcast::channel(16);
+        let (session_state, _) = watch::channel(None);
         Self {
             session: Arc::new(tokio::sync::Mutex::new(None)),
             sftp: tokio::sync::Mutex::new(None),
-            events,
+            session_state,
         }
     }
 
@@ -112,7 +111,7 @@ impl RusshTransport {
                 handle
                     .channel_open_session()
                     .await
-                    .map_err(|error| connection_error(error, &self.events, true))?
+                    .map_err(|error| connection_error(error, &self.session_state, true))?
             };
             let session = SftpSession::new(channel.into_stream())
                 .await
@@ -129,16 +128,18 @@ impl Default for RusshTransport {
     }
 }
 
-/// Maps a transport failure to a catalog error and announces the loss once.
+/// Maps a transport failure to a catalog error and records the loss once.
+/// The `detail` is a log adjunct; the catalog code is what the core acts on.
 fn connection_error(
     error: impl std::fmt::Display,
-    events: &broadcast::Sender<SessionEvent>,
+    session_state: &watch::Sender<Option<SessionLoss>>,
     lost: bool,
 ) -> BetelgeuzError {
     if lost {
-        let _ = events.send(SessionEvent::Disconnected {
+        session_state.send_replace(Some(SessionLoss {
+            cause: ErrorCode::SshLost,
             detail: error.to_string(),
-        });
+        }));
         BetelgeuzError::new(ErrorCode::SshLost).with_cause(error)
     } else {
         BetelgeuzError::new(ErrorCode::SshUnreachable).with_cause(error)
@@ -205,17 +206,17 @@ impl SshTransport for RusshTransport {
         let user = endpoint.username.clone();
         let authenticated = match authentication {
             crate::Authentication::Password(secret) => handle
-                .authenticate_password(user, String::from_utf8_lossy(secret.expose()).into_owned())
+                .authenticate_password(user, secret.expose().to_owned())
                 .await,
             crate::Authentication::PrivateKey {
                 private_key,
                 passphrase,
             } => {
-                let pem = String::from_utf8_lossy(private_key.expose()).into_owned();
-                let passphrase = passphrase
-                    .as_ref()
-                    .map(|secret| String::from_utf8_lossy(secret.expose()).into_owned());
-                let key = decode_secret_key(&pem, passphrase.as_deref()).map_err(|error| {
+                let key = decode_secret_key(
+                    private_key.expose(),
+                    passphrase.as_ref().map(|secret| secret.expose()),
+                )
+                .map_err(|error| {
                     BetelgeuzError::new(ErrorCode::SshAuthFailed)
                         .with_detail("private key could not be decoded")
                         .with_cause(error)
@@ -244,8 +245,8 @@ impl SshTransport for RusshTransport {
         Ok(())
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
-        self.events.subscribe()
+    fn session_state(&self) -> watch::Receiver<Option<SessionLoss>> {
+        self.session_state.subscribe()
     }
 
     async fn exec(&self, request: ExecRequest) -> Result<ExecHandle, BetelgeuzError> {
@@ -255,12 +256,12 @@ impl SshTransport for RusshTransport {
             handle
                 .channel_open_session()
                 .await
-                .map_err(|error| connection_error(error, &self.events, true))?
+                .map_err(|error| connection_error(error, &self.session_state, true))?
         };
         channel
             .exec(true, request.command)
             .await
-            .map_err(|error| connection_error(error, &self.events, true))?;
+            .map_err(|error| connection_error(error, &self.session_state, true))?;
 
         let (sender, receiver) = mpsc::channel(16);
         let (terminate, termination) = oneshot::channel();
@@ -387,63 +388,6 @@ impl SshTransport for RusshTransport {
         }))
     }
 
-    async fn forward(
-        &self,
-        remote_host: &str,
-        remote_port: u16,
-    ) -> Result<ForwardHandle, BetelgeuzError> {
-        if remote_port == 0 {
-            return Err(BetelgeuzError::new(ErrorCode::ConfigInvalid)
-                .with_detail("forward target port must be non-zero"));
-        }
-        let listener = tokio::net::TcpListener::bind(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            0,
-        ))
-        .await
-        .map_err(|error| {
-            BetelgeuzError::new(ErrorCode::SshLost)
-                .with_detail("could not open a local forwarding listener")
-                .with_cause(error)
-        })?;
-        let local_addr = listener.local_addr().map_err(|error| {
-            BetelgeuzError::new(ErrorCode::SshLost).with_cause(error)
-        })?;
-        let session = Arc::clone(&self.session);
-        let remote_host = remote_host.to_owned();
-        let (close, closed) = oneshot::channel();
-        tokio::spawn(async move {
-            let mut closed: Option<oneshot::Receiver<()>> = Some(closed);
-            loop {
-                let accepted = if closed.is_some() {
-                    tokio::select! {
-                        biased;
-                        _ = closed.as_mut().expect("checked") => { break; }
-                        accepted = listener.accept() => accepted,
-                    }
-                } else {
-                    break;
-                };
-                let Ok((mut local, _)) = accepted else { break };
-                let session = Arc::clone(&session);
-                let remote_host = remote_host.clone();
-                tokio::spawn(async move {
-                    let guard = session.lock().await;
-                    let Some(handle) = guard.as_ref() else { return };
-                    let channel = handle
-                        .channel_open_direct_tcpip(remote_host, remote_port as u32, "127.0.0.1", 0)
-                        .await;
-                    drop(guard);
-                    if let Ok(remote) = channel {
-                        let mut remote = remote.into_stream();
-                        let _ = tokio::io::copy_bidirectional(&mut local, &mut remote).await;
-                    }
-                });
-            }
-        });
-        Ok(ForwardHandle::new(local_addr, Some(close)))
-    }
-
     async fn close(&self) -> Result<(), BetelgeuzError> {
         let mut guard = self.session.lock().await;
         *self.sftp.lock().await = None;
@@ -455,11 +399,11 @@ impl SshTransport for RusshTransport {
 }
 
 impl RusshTransport {
-    /// Periodic keepalive; a failed probe is reported as a lost connection so
-    /// the core's reconnect policy can take over.
+    /// Periodic keepalive; a failed probe records a lost session so the
+    /// core's reconnect policy can take over.
     fn spawn_keepalive(&self, every_seconds: u16) {
         let session = Arc::clone(&self.session);
-        let events = self.events.clone();
+        let session_state = self.session_state.clone();
         tokio::spawn(async move {
             let interval = Duration::from_secs(u64::from(every_seconds.max(1)));
             loop {
@@ -468,9 +412,10 @@ impl RusshTransport {
                 let Some(handle) = guard.as_ref() else { return };
                 if handle.send_keepalive(false).await.is_err() {
                     drop(guard);
-                    let _ = events.send(SessionEvent::Disconnected {
+                    session_state.send_replace(Some(SessionLoss {
+                        cause: ErrorCode::SshLost,
                         detail: "keepalive probe failed".into(),
-                    });
+                    }));
                     return;
                 }
             }

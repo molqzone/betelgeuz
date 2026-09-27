@@ -180,6 +180,14 @@ fn protocol_schemas() -> Vec<(&'static str, schemars::Schema)> {
             schemars::schema_for!(methods::ResolveProfileResult),
         ),
         (
+            "inspect-host-key-params",
+            schemars::schema_for!(methods::InspectHostKeyParams),
+        ),
+        (
+            "inspect-host-key-result",
+            schemars::schema_for!(methods::InspectHostKeyResult),
+        ),
+        (
             "attach-request",
             schemars::schema_for!(methods::AttachRequest),
         ),

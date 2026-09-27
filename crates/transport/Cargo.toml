@@ -9,10 +9,10 @@ description = "SshTransport API and test fake for the planned russh implementati
 [dependencies]
 async-trait.workspace = true
 errors = { path = "../errors" }
+protocol = { path = "../protocol" }
 russh = { version = "0.63.3", default-features = false, features = ["flate2", "ring", "rsa"] }
 russh-sftp = "3.0.0"
 tokio.workspace = true
-zeroize.workspace = true
 
 [features]
 test-util = []

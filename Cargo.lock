@@ -110,11 +110,13 @@ dependencies = [
 name = "betelgeuz"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "errors",
  "protocol",
  "serde",
  "serde_json",
  "strategy",
+ "tokio",
  "transport",
  "zeroize",
 ]
@@ -1854,10 +1856,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "errors",
+ "protocol",
  "russh",
  "russh-sftp",
  "tokio",
- "zeroize",
 ]
 
 [[package]]

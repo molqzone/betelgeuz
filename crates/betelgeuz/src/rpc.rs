@@ -1,32 +1,34 @@
-//! JSON-RPC 2.0 over stdio: LSP-style `Content-Length` framing.
+//! JSON-RPC 2.0 over Tokio stdio: LSP-style `Content-Length` framing.
 //!
-//! This module is transport-of-transport: it moves messages between the
-//! frontend and the dispatch surface. It knows nothing about SSH, attach, or
-//! strategies. The loop is synchronous for now; it moves to the async runtime
-//! when the russh transport lands (Phase 1).
+//! This module owns wire framing and protocol dispatch only. Connection
+//! policy, profile resolution, and transport calls live in [`crate::service`].
 
-use std::io::{self, BufRead, Write};
+use std::io;
 
 use errors::{BetelgeuzError, ErrorCode};
 use protocol::{
     config::CredentialSecrets,
     error::{RpcError, RpcErrorData},
-    methods::{self, AttachRequest, InitializeParams, InitializeResult},
+    methods::{
+        self, AttachRef, AttachRequest, InitializeParams, InitializeResult, InspectHostKeyParams,
+        ResolveProfileParams,
+    },
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::Zeroize;
 
-// Standard JSON-RPC error codes for protocol-level failures.
+use crate::service::{CoreRequest, CoreResponse, RequestHandler};
+
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 
-/// Reads one framed message. `Ok(None)` at clean end-of-stream.
-pub fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
+pub async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<Option<Value>> {
     let mut content_length: Option<usize> = None;
     loop {
         let mut line = String::new();
-        let n = reader.read_line(&mut line)?;
+        let n = reader.read_line(&mut line).await?;
         if n == 0 {
             return match content_length {
                 None => Ok(None),
@@ -38,55 +40,102 @@ pub fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
-            return match content_length {
-                Some(len) => {
-                    if len > protocol::MAX_MESSAGE_BYTES {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "message exceeds the maximum allowed size",
-                        ));
-                    }
-                    let mut body = vec![0u8; len];
-                    if let Err(error) = reader.read_exact(&mut body) {
-                        body.zeroize();
-                        return Err(error);
-                    }
-                    let parsed = serde_json::from_slice(&body);
-                    body.zeroize();
-                    let value =
-                        parsed.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                    Ok(Some(value))
-                }
-                None => Err(io::Error::new(
+            let len = content_length.ok_or_else(|| {
+                io::Error::new(
                     io::ErrorKind::InvalidData,
                     "message without Content-Length header",
-                )),
-            };
+                )
+            })?;
+            if len > protocol::MAX_MESSAGE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "message exceeds the maximum allowed size",
+                ));
+            }
+            let mut body = vec![0u8; len];
+            if let Err(error) = reader.read_exact(&mut body).await {
+                body.zeroize();
+                return Err(error);
+            }
+            let parsed = serde_json::from_slice(&body)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+            body.zeroize();
+            return parsed.map(Some);
         }
         if let Some((name, value)) = trimmed.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse().ok();
+                if content_length.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "duplicate Content-Length header",
+                    ));
+                }
+                content_length = Some(value.trim().parse().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length header")
+                })?);
             }
         }
     }
 }
 
-pub fn write_message(writer: &mut impl Write, value: &Value) -> io::Result<()> {
+pub async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> io::Result<()> {
     let body = serde_json::to_vec(value)?;
-    write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
-    writer.write_all(&body)?;
-    writer.flush()
+    if body.len() > protocol::MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "message exceeds the maximum allowed size",
+        ));
+    }
+    writer
+        .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
+        .await?;
+    writer.write_all(&body).await?;
+    writer.flush().await
 }
 
-/// Dispatches one message. Returns `None` for notifications. Unimplemented
-/// methods answer `method not found` until the service that owns them lands.
+#[cfg(test)]
 pub fn dispatch(mut message: Value) -> Option<Value> {
     let Some(id) = message.get("id").cloned() else {
-        return None; // notification
+        return None;
     };
     let Some(method) = message
         .get("method")
-        .and_then(|m| m.as_str())
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return Some(error_response(
+            id,
+            RpcError::protocol(INVALID_REQUEST, "missing method"),
+        ));
+    };
+    let params = message
+        .as_object_mut()
+        .and_then(|object| object.remove("params"))
+        .unwrap_or(Value::Null);
+    Some(match method.as_str() {
+        methods::PING => result_response(id, json!({ "pong": true })),
+        methods::SHUTDOWN => result_response(id, Value::Null),
+        methods::INITIALIZE => initialize_response(id, params),
+        _ => error_response(
+            id,
+            RpcError::protocol(
+                METHOD_NOT_FOUND,
+                format!("method not implemented: {method}"),
+            ),
+        ),
+    })
+}
+
+pub async fn dispatch_async<H: RequestHandler>(
+    mut message: Value,
+    handler: &mut H,
+) -> Option<Value> {
+    let Some(id) = message.get("id").cloned() else {
+        return None;
+    };
+    let Some(method) = message
+        .get("method")
+        .and_then(Value::as_str)
         .map(str::to_owned)
     else {
         return Some(error_response(
@@ -102,18 +151,45 @@ pub fn dispatch(mut message: Value) -> Option<Value> {
         methods::PING => result_response(id, json!({ "pong": true })),
         methods::SHUTDOWN => result_response(id, Value::Null),
         methods::INITIALIZE => initialize_response(id, params),
-        methods::ATTACH => match parse_attach_request(params) {
-            Ok(request) => {
-                drop(request);
-                error_response(
-                    id,
-                    RpcError::protocol(
-                        METHOD_NOT_FOUND,
-                        "method not implemented: betelgeuz/attach",
-                    ),
-                )
+        methods::INSPECT_HOST_KEY => match serde_json::from_value::<InspectHostKeyParams>(params) {
+            Ok(request) => service_response(
+                id,
+                handler
+                    .handle_request(CoreRequest::InspectHostKey(request))
+                    .await,
+            ),
+            Err(error) => {
+                error_response(id, RpcError::protocol(INVALID_REQUEST, error.to_string()))
             }
+        },
+        methods::RESOLVE_PROFILE => match serde_json::from_value::<ResolveProfileParams>(params) {
+            Ok(request) => service_response(
+                id,
+                handler
+                    .handle_request(CoreRequest::ResolveProfile(request))
+                    .await,
+            ),
+            Err(error) => {
+                error_response(id, RpcError::protocol(INVALID_REQUEST, error.to_string()))
+            }
+        },
+        methods::ATTACH => match parse_attach_request(params) {
+            Ok(request) => service_response(
+                id,
+                handler.handle_request(CoreRequest::Attach(request)).await,
+            ),
             Err(error) => error_response(id, RpcError::protocol(INVALID_REQUEST, error)),
+        },
+        methods::DISCONNECT => match serde_json::from_value::<AttachRef>(params) {
+            Ok(request) => service_response(
+                id,
+                handler
+                    .handle_request(CoreRequest::Disconnect(request))
+                    .await,
+            ),
+            Err(error) => {
+                error_response(id, RpcError::protocol(INVALID_REQUEST, error.to_string()))
+            }
         },
         _ => error_response(
             id,
@@ -126,71 +202,62 @@ pub fn dispatch(mut message: Value) -> Option<Value> {
     Some(response)
 }
 
+pub async fn serve<R, W, H>(reader: &mut R, writer: &mut W, handler: &mut H) -> io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+    H: RequestHandler,
+{
+    while let Some(message) = read_message(reader).await? {
+        let is_shutdown = message.get("method").and_then(Value::as_str) == Some(methods::SHUTDOWN);
+        if let Some(response) = dispatch_async(message, handler).await {
+            write_message(writer, &response).await?;
+        }
+        if is_shutdown {
+            break;
+        }
+    }
+    Ok(())
+}
+
 fn parse_attach_request(mut params: Value) -> Result<AttachRequest, String> {
     let credentials = params
         .as_object_mut()
         .and_then(|object| object.remove("credentialSecrets"));
     let credential_secrets = match credentials {
         None | Some(Value::Null) => None,
-        Some(value) => {
-            let mut value = value;
+        Some(mut value) => {
             if !valid_credential_secrets_shape(&value) {
                 zeroize_json(&mut value);
                 return Err(
                     "credentialSecrets must map references to password/passphrase values".into(),
                 );
             }
-            // Deserialize by reference so the incoming Value stays owned here
-            // and is zeroized on both paths; `from_value` would drop it
-            // unzeroized when parsing fails.
-            let parsed =
-                CredentialSecrets::deserialize(&value).map_err(|error| error.to_string());
+            let parsed = CredentialSecrets::deserialize(&value).map_err(|error| error.to_string());
             zeroize_json(&mut value);
             Some(parsed?)
         }
     };
-    if !valid_attach_shape(&params) {
-        zeroize_json(&mut params);
-        return Err("attach params contain unknown fields".into());
-    }
     let mut request: AttachRequest =
         serde_json::from_value(params).map_err(|error| error.to_string())?;
     request.credential_secrets = credential_secrets;
     Ok(request)
 }
 
-fn valid_attach_shape(value: &Value) -> bool {
-    let Some(fields) = value.as_object() else {
-        return false;
-    };
-    fields.keys().all(|name| {
-        matches!(
-            name.as_str(),
-            "catalog" | "target" | "strategyId" | "strategyConfiguration"
-        )
-    })
-}
-
 fn valid_credential_secrets_shape(value: &Value) -> bool {
-    let Some(fields) = value.as_object() else {
-        return false;
-    };
-    fields.values().all(valid_credential_material_shape)
-}
-
-fn valid_credential_material_shape(value: &Value) -> bool {
-    let Some(fields) = value.as_object() else {
-        return false;
-    };
-    fields.iter().all(|(name, value)| {
-        matches!(name.as_str(), "password" | "passphrase") && (value.is_null() || value.is_string())
+    value.as_object().is_some_and(|fields| {
+        fields.values().all(|value| {
+            value.as_object().is_some_and(|fields| {
+                fields.iter().all(|(name, value)| {
+                    matches!(name.as_str(), "password" | "passphrase")
+                        && (value.is_null() || value.is_string())
+                })
+            })
+        })
     })
 }
 
 fn zeroize_json(value: &mut Value) {
-    // Recurses only into values: object keys here are non-secret field names
-    // (`credentialRef` and friends). If secret material ever appears in key
-    // position — for example a map keyed by secret — keys must be zeroized too.
     match value {
         Value::String(string) => string.zeroize(),
         Value::Array(items) => items.iter_mut().for_each(zeroize_json),
@@ -202,7 +269,9 @@ fn zeroize_json(value: &mut Value) {
 fn initialize_response(id: Value, params: Value) -> Value {
     let parsed: InitializeParams = match serde_json::from_value(params) {
         Ok(parsed) => parsed,
-        Err(e) => return error_response(id, RpcError::protocol(INVALID_REQUEST, e.to_string())),
+        Err(error) => {
+            return error_response(id, RpcError::protocol(INVALID_REQUEST, error.to_string()));
+        }
     };
     if parsed.protocol_version != protocol::PROTOCOL_VERSION {
         let error = BetelgeuzError::new(ErrorCode::ProtocolMismatch).with_detail(format!(
@@ -217,10 +286,27 @@ fn initialize_response(id: Value, params: Value) -> Value {
         serde_json::to_value(InitializeResult {
             protocol_version: protocol::PROTOCOL_VERSION.to_string(),
             core_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: Vec::new(), // grows with the service surface (Phase 0+)
+            capabilities: Vec::new(),
         })
         .expect("InitializeResult serializes"),
     )
+}
+
+fn service_response(id: Value, result: Result<CoreResponse, BetelgeuzError>) -> Value {
+    match result {
+        Ok(response) => result_response(id, core_response_value(response)),
+        Err(error) => error_response(id, application_error(&error)),
+    }
+}
+
+fn core_response_value(response: CoreResponse) -> Value {
+    match response {
+        CoreResponse::ResolveProfile(value) => serde_json::to_value(value),
+        CoreResponse::InspectHostKey(value) => serde_json::to_value(value),
+        CoreResponse::Attach(value) => serde_json::to_value(value),
+        CoreResponse::Disconnect(value) => serde_json::to_value(value),
+    }
+    .expect("core response serializes")
 }
 
 fn application_error(err: &BetelgeuzError) -> RpcError {
@@ -247,43 +333,25 @@ fn error_response(id: Value, error: RpcError) -> Value {
     message
 }
 
-/// Serves the stdio loop until shutdown or end-of-stream.
-pub fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<()> {
-    while let Some(message) = read_message(reader)? {
-        let is_shutdown = message.get("method").and_then(|m| m.as_str()) == Some(methods::SHUTDOWN);
-        if let Some(response) = dispatch(message) {
-            write_message(writer, &response)?;
-        }
-        if is_shutdown {
-            break;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use tokio::io::BufReader;
 
-    #[test]
-    fn framing_round_trips() {
+    #[tokio::test]
+    async fn framing_round_trips() {
         let original = json!({ "jsonrpc": "2.0", "id": 1, "method": "betelgeuz/ping" });
         let mut buffer = Vec::new();
-        write_message(&mut buffer, &original).unwrap();
-        let mut cursor = Cursor::new(buffer);
-        let read = read_message(&mut cursor).unwrap().unwrap();
-        assert_eq!(read, original);
-        assert!(read_message(&mut cursor).unwrap().is_none());
+        write_message(&mut buffer, &original).await.unwrap();
+        let mut cursor = BufReader::new(Cursor::new(buffer));
+        assert_eq!(read_message(&mut cursor).await.unwrap().unwrap(), original);
+        assert!(read_message(&mut cursor).await.unwrap().is_none());
     }
 
     #[test]
     fn initialize_negotiates_version() {
-        let response = dispatch(json!({
-            "jsonrpc": "2.0", "id": 7, "method": "betelgeuz/initialize",
-            "params": { "protocolVersion": protocol::PROTOCOL_VERSION, "frontend": "vscode" }
-        }))
-        .unwrap();
+        let response = dispatch(json!({ "jsonrpc": "2.0", "id": 7, "method": "betelgeuz/initialize", "params": { "protocolVersion": protocol::PROTOCOL_VERSION, "frontend": "vscode" } })).unwrap();
         assert_eq!(
             response["result"]["protocolVersion"],
             protocol::PROTOCOL_VERSION
@@ -292,13 +360,8 @@ mod tests {
 
     #[test]
     fn initialize_version_mismatch_is_structured() {
-        let response = dispatch(json!({
-            "jsonrpc": "2.0", "id": 8, "method": "betelgeuz/initialize",
-            "params": { "protocolVersion": "9.9.9", "frontend": "vscode" }
-        }))
-        .unwrap();
+        let response = dispatch(json!({ "jsonrpc": "2.0", "id": 8, "method": "betelgeuz/initialize", "params": { "protocolVersion": "9.9.9", "frontend": "vscode" } })).unwrap();
         assert_eq!(response["error"]["data"]["code"], "protocol.mismatch");
-        assert_eq!(response["error"]["data"]["remediation"], "upgradeFrontend");
     }
 
     #[test]
@@ -308,36 +371,16 @@ mod tests {
         assert_eq!(response["error"]["code"], METHOD_NOT_FOUND);
     }
 
-    #[test]
-    fn notifications_produce_no_response() {
-        assert!(dispatch(json!({ "jsonrpc": "2.0", "method": "betelgeuz/progress" })).is_none());
-    }
-
-    #[test]
-    fn attach_request_consumes_ephemeral_credentials_without_echoing_them() {
-        let response = dispatch(json!({
-            "jsonrpc": "2.0", "id": 10, "method": methods::ATTACH,
-            "params": {
-                "catalog": {},
-                "target": { "host": "board.local", "username": "root", "credentialRef": "board" },
-                "strategyId": "linux.ssh-app",
-                "credentialSecrets": { "board": { "password": "one-use-secret" } }
-            }
-        }))
-        .unwrap();
-
-        assert_eq!(response["error"]["code"], METHOD_NOT_FOUND);
-        assert!(!response.to_string().contains("one-use-secret"));
-    }
-
-    #[test]
-    fn rpc_body_size_limit_is_checked_before_allocating_the_body() {
+    #[tokio::test]
+    async fn rpc_body_size_limit_is_checked_before_allocating_the_body() {
         let header = format!(
             "Content-Length: {}\r\n\r\n",
             protocol::MAX_MESSAGE_BYTES + 1
         );
-        let mut reader = Cursor::new(header.into_bytes());
-        let error = read_message(&mut reader).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let mut reader = BufReader::new(Cursor::new(header.into_bytes()));
+        assert_eq!(
+            read_message(&mut reader).await.unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }

@@ -2,23 +2,23 @@
 
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicBool, AtomicU16, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
 };
 
 use async_trait::async_trait;
 use errors::{BetelgeuzError, ErrorCode};
+
 use tokio::{
     io::AsyncReadExt,
-    sync::{broadcast, mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
 };
 
 use crate::{
-    ExecEvent, ExecHandle, ExecRequest, ForwardHandle, HostKeyFingerprint, RemoteFileInfo,
-    SessionEvent, SshConnectOptions, SshEndpoint, SshTransport,
+    ExecEvent, ExecHandle, ExecRequest, HostKeyFingerprint, RemoteFileInfo, SessionLoss,
+    SshConnectOptions, SshEndpoint, SshTransport,
 };
 
 const DEFAULT_HOST_KEY: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -34,13 +34,12 @@ struct FakeState {
     connected: AtomicBool,
     command_events: Mutex<HashMap<String, Vec<ExecEvent>>>,
     files: Mutex<HashMap<String, Vec<u8>>>,
-    events: broadcast::Sender<SessionEvent>,
-    next_forward_port: AtomicU16,
+    session_state: watch::Sender<Option<SessionLoss>>,
 }
 
 impl FakeSshTransport {
     pub fn new() -> Self {
-        let (events, _) = broadcast::channel(32);
+        let (session_state, _) = watch::channel(None);
         Self {
             state: Arc::new(FakeState {
                 host_key: Mutex::new(HostKeyFingerprint::parse(DEFAULT_HOST_KEY).unwrap()),
@@ -48,8 +47,7 @@ impl FakeSshTransport {
                 connected: AtomicBool::new(false),
                 command_events: Mutex::new(HashMap::new()),
                 files: Mutex::new(HashMap::new()),
-                events,
-                next_forward_port: AtomicU16::new(40_000),
+                session_state,
             }),
         }
     }
@@ -76,11 +74,12 @@ impl FakeSshTransport {
 
     /// Simulates an established session dropping so consumers can exercise
     /// their own reconnect policy.
-    pub fn drop_connection(&self, detail: impl Into<String>) {
+    pub fn drop_connection(&self, cause: ErrorCode, detail: impl Into<String>) {
         self.state.connected.store(false, Ordering::Relaxed);
-        let _ = self.state.events.send(SessionEvent::Disconnected {
+        self.state.session_state.send_replace(Some(SessionLoss {
+            cause,
             detail: detail.into(),
-        });
+        }));
     }
 
     fn ensure_connected(&self) -> Result<(), BetelgeuzError> {
@@ -120,8 +119,8 @@ impl SshTransport for FakeSshTransport {
         Ok(())
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
-        self.state.events.subscribe()
+    fn session_state(&self) -> watch::Receiver<Option<SessionLoss>> {
+        self.state.session_state.subscribe()
     }
 
     async fn exec(&self, request: ExecRequest) -> Result<ExecHandle, BetelgeuzError> {
@@ -131,7 +130,7 @@ impl SshTransport for FakeSshTransport {
             .command_events
             .lock()
             .unwrap()
-            .get(&request.command)
+            .get(request.command())
             .cloned()
             .unwrap_or_default();
         let (sender, receiver) = mpsc::channel(16);
@@ -204,23 +203,6 @@ impl SshTransport for FakeSshTransport {
             }))
     }
 
-    async fn forward(
-        &self,
-        _remote_host: &str,
-        remote_port: u16,
-    ) -> Result<ForwardHandle, BetelgeuzError> {
-        self.ensure_connected()?;
-        if remote_port == 0 {
-            return Err(BetelgeuzError::new(ErrorCode::ConfigInvalid)
-                .with_detail("forward target port must be non-zero"));
-        }
-        let local_port = self.state.next_forward_port.fetch_add(1, Ordering::Relaxed);
-        Ok(ForwardHandle::new(
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), local_port),
-            None,
-        ))
-    }
-
     async fn close(&self) -> Result<(), BetelgeuzError> {
         self.state.connected.store(false, Ordering::Relaxed);
         Ok(())
@@ -230,7 +212,8 @@ impl SshTransport for FakeSshTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Authentication, OutputStream, Secret};
+    use crate::{Authentication, FixedCommand, LaunchRequest, OutputStream, TerminateSignal};
+    use protocol::config::SensitiveString;
 
     fn connect_options(pin: &str) -> SshConnectOptions {
         SshConnectOptions {
@@ -239,7 +222,7 @@ mod tests {
                 port: 22,
                 username: "root".into(),
             },
-            authentication: Authentication::Password(Secret::new(b"secret".to_vec())),
+            authentication: Authentication::Password(SensitiveString::from("secret".to_owned())),
             host_key_pin: HostKeyFingerprint::parse(pin).unwrap(),
             proxy_chain: Vec::new(),
             keepalive_seconds: 30,
@@ -264,8 +247,16 @@ mod tests {
             .connect(connect_options(DEFAULT_HOST_KEY))
             .await
             .unwrap();
+        let request = ExecRequest::launch(LaunchRequest {
+            executable: "fixed-launcher".into(),
+            argv: Vec::new(),
+            cwd: None,
+            environment: Default::default(),
+            allocate_pty: false,
+        })
+        .unwrap();
         transport.set_exec_events(
-            "fixed-launcher",
+            request.command().to_owned(),
             vec![
                 ExecEvent::Output {
                     stream: OutputStream::Stdout,
@@ -277,13 +268,7 @@ mod tests {
                 },
             ],
         );
-        let mut command = transport
-            .exec(ExecRequest {
-                command: "fixed-launcher".into(),
-                allocate_pty: false,
-            })
-            .await
-            .unwrap();
+        let mut command = transport.exec(request).await.unwrap();
         assert!(matches!(
             command.next_event().await.unwrap(),
             Some(ExecEvent::Output { .. })
@@ -307,5 +292,33 @@ mod tests {
             Some(&b"firmware"[..])
         );
         assert!(transport.metadata("/tmp/stage.elf").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn fixed_templates_run_through_the_same_exec_channel() {
+        let transport = FakeSshTransport::new();
+        transport
+            .connect(connect_options(DEFAULT_HOST_KEY))
+            .await
+            .unwrap();
+        let request = ExecRequest::fixed(FixedCommand::SignalProcessGroup {
+            pgid: 4242,
+            signal: TerminateSignal::Kill,
+        });
+        assert_eq!(request.command(), "kill -KILL -- -4242");
+        transport
+            .set_exec_events(request.command().to_owned(), Vec::new());
+        let mut handle = transport.exec(request).await.unwrap();
+        // The stream stays open while the remote command runs; termination
+        // reports the terminating signal and closes it.
+        handle.terminate().await.unwrap();
+        assert!(matches!(
+            handle.next_event().await.unwrap(),
+            Some(ExecEvent::Exit {
+                signal: Some(signal),
+                ..
+            }) if signal == "TERM"
+        ));
+        assert!(handle.next_event().await.unwrap().is_none());
     }
 }

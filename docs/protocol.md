@@ -14,6 +14,7 @@ The maximum JSON body size is `16777216` bytes. Artifact contents stay on the ho
 | `betelgeuz/shutdown` | `EmptyParams` | `null` |
 | `betelgeuz/ping` | `EmptyParams` | `PingResult` |
 | `betelgeuz/resolveProfile` | `ResolveProfileParams` | `ResolveProfileResult` |
+| `betelgeuz/inspectHostKey` | `InspectHostKeyParams` | `InspectHostKeyResult` |
 | `betelgeuz/attach` | `AttachRequest` | `AttachResult` |
 | `betelgeuz/disconnect` | `AttachRef` | `DisconnectResult` |
 | `betelgeuz/artifactHandoff` | `ArtifactHandoffParams` | `ArtifactHandoffResult` |

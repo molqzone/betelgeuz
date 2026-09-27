@@ -15,6 +15,11 @@ protocol = { path = "../protocol" }
 errors = { path = "../errors" }
 transport = { path = "../transport" }
 strategy = { path = "../strategy" }
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+transport = { path = "../transport", features = ["test-util"] }

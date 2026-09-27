@@ -9,6 +9,7 @@ pub const INITIALIZE: &str = "betelgeuz/initialize";
 pub const SHUTDOWN: &str = "betelgeuz/shutdown";
 pub const PING: &str = "betelgeuz/ping";
 pub const RESOLVE_PROFILE: &str = "betelgeuz/resolveProfile";
+pub const INSPECT_HOST_KEY: &str = "betelgeuz/inspectHostKey";
 pub const ATTACH: &str = "betelgeuz/attach";
 pub const DISCONNECT: &str = "betelgeuz/disconnect";
 pub const ARTIFACT_HANDOFF: &str = "betelgeuz/artifactHandoff";
@@ -27,6 +28,7 @@ pub const REQUESTS: &[&str] = &[
     SHUTDOWN,
     PING,
     RESOLVE_PROFILE,
+    INSPECT_HOST_KEY,
     ATTACH,
     DISCONNECT,
     ARTIFACT_HANDOFF,
@@ -89,6 +91,11 @@ pub const METHOD_CONTRACTS: &[MethodContract] = &[
         method: RESOLVE_PROFILE,
         params: "ResolveProfileParams",
         result: Some("ResolveProfileResult"),
+    },
+    MethodContract {
+        method: INSPECT_HOST_KEY,
+        params: "InspectHostKeyParams",
+        result: Some("InspectHostKeyResult"),
     },
     MethodContract {
         method: ATTACH,
@@ -257,6 +264,19 @@ pub struct ResolvedProfile {
 #[serde(rename_all = "camelCase")]
 pub struct ResolveProfileResult {
     pub profile: ResolvedProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectHostKeyParams {
+    pub catalog: crate::config::ProfileCatalog,
+    pub target: crate::config::TargetOverrides,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectHostKeyResult {
+    pub host_key_fingerprint: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
