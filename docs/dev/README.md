@@ -71,6 +71,27 @@ against these rules; they are enforced by review and by the checklist at the bot
 7. **Per-change checklist** (in the commit message or review): *What is the second
    implementation or consumer of each new indirection?* If there is none, revert it.
 
+## Code discipline
+
+TigerStyle adapted for a VS Code extension: the value is not the rules but the
+referees — every rule here is mechanically checked or owned by a named
+mechanism. **A rule without a referee is not a rule.**
+
+| Rule | Failure it prevents | Referee |
+| --- | --- | --- |
+| **Surface Law**: command handlers are three lines of shape — parse input, call the service, render the result; no business logic | UI handlers growing into a second implementation of the core | boundary test (`src/boundaries.test.ts`): `vscode` imports only in the surface allowlist |
+| **S1. Every acquire has one owner and one release path**: registrations, timers, and session handles live in their owner's `DisposableStore` | ghost commands and leaked sessions after reload | review checklist; lint when a rule exists |
+| **S2. No module-level mutable state** | hidden globals and cross-window interference | boundary test (no `export let` / `export var`) |
+| **S3. Secrets live only inside the wrapper**: never in logs, JSON, or error messages | credentials leaking into the OutputChannel | redacted `toString` + a log-leak test |
+| **T1. No floating promises**: every promise is awaited or explicitly `void`ed with a reason | `catch(() => {})` silent swallowing | `@typescript-eslint/no-floating-promises` / `no-misused-promises` |
+| **T2. Explicit state machines with asserted transitions**: the attach states walk a whitelist table; illegal transitions hit `invariant` | state sliding into impossible combinations | transition table + tests |
+| **T3. Async results carry an epoch**: UI updates across `await` carry the generation they were issued in; stale writes are dropped | “user hit disconnect, the reconnect callback still repaints” | pattern + tests |
+| **E1. `activate()` only registers**: activation stays under a small budget; work happens on command | sluggish startup | activation timing test |
+| **E2. Everything is bounded**: buffers, backoff, waits, retries — named constants | unbounded growth in a long-lived host | review: bare `while` or unbounded collection is suspect |
+| **A1. `invariant()` for programmer errors, the catalog for environment failures** | mixing recoverable failures with bugs | the one-line test: *user/target/network can cause it → catalog; only a bug can cause it → invariant* |
+| **A2. Assert at trust boundaries**: after parsing, before side effects, after state transitions | corrupt assumptions crossing into effects | `invariant` calls at the named spots |
+| **A3. No guessing defenses**: `x ?? fallback` over an invariant is silent degradation by another name | masks bugs as behavior | review |
+
 ## Testing
 
 Run `npm run check` for type checking, `npm test` for the unit suite (vitest),

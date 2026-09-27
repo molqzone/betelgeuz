@@ -273,8 +273,7 @@ export class BetelgeuzError extends Error {
     this.remediation = def.remediation;
     this.targetState = context.targetState;
     this.detail = context.detail;
-    this.causeText =
-      context.cause === undefined ? undefined : String(context.cause);
+    this.causeText = context.cause === undefined ? undefined : describeCause(context.cause);
   }
 
   /** Collapses an unexpected failure while keeping the phase it happened in. */
@@ -285,6 +284,21 @@ export class BetelgeuzError extends Error {
 
 export function isBetelgeuzError(value: unknown): value is BetelgeuzError {
   return value instanceof BetelgeuzError;
+}
+
+/** Renders an unknown cause into something worth reading in a log. */
+function describeCause(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.stack ?? cause.message;
+  }
+  if (typeof cause === "string") {
+    return cause;
+  }
+  try {
+    return JSON.stringify(cause) ?? "unknown error";
+  } catch {
+    return "unserializable error";
+  }
 }
 
 /** Renders the `docs/ERRORS.md` body from the catalog. */

@@ -47,6 +47,14 @@ describe("BetelgeuzError", () => {
     expect(error.causeText).toContain("boom");
   });
 
+  it("cause text stays readable for non-error values", () => {
+    const error = BetelgeuzError.wrapUnexpected("deploy", { code: 42 });
+    expect(error.causeText).toContain('"code":42');
+    expect(BetelgeuzError.wrapUnexpected("deploy", "plain").causeText).toBe(
+      "plain"
+    );
+  });
+
   it("strategy codes stay namespaced and separate", () => {
     for (const code of Object.keys(STRATEGY_ERRORS)) {
       expect(code.startsWith("rproc.")).toBe(true);
