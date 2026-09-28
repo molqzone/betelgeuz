@@ -4,7 +4,7 @@
  * The core owns profile resolution, credential lookup, and reconnect policy.
  * This module verifies the pinned server key before returning a connected
  * session and provides exec and SFTP channels over that one session. The single
- * production implementation is `ssh2-transport`; the fake serves tests only.
+ * production implementation is `ssh`; the fake serves tests only.
  *
  * Why wrap the SSH library at all:
  *

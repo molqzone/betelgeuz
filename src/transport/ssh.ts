@@ -1,5 +1,5 @@
 /**
- * `ssh2`-backed production implementation of `SshTransport`.
+ * The production `SshTransport` implementation, backed by the `ssh2` library.
  *
  * This is the single production transport. It verifies the pinned host key
  * before any channel opens and keeps one SSH session per transport object with
@@ -26,7 +26,7 @@ import {
   type SshTransport,
 } from "./index";
 
-export class Ssh2Transport implements SshTransport {
+export class SshClient implements SshTransport {
   private client?: Client;
   private sftp?: SFTPWrapper;
   private connected = false;
