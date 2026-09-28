@@ -7,8 +7,8 @@ import {
   HostKeyFingerprint,
   type SshConnectOptions,
   type SessionLoss,
-} from "./index";
-import { FakeSshTransport } from "./fake";
+} from "../transport";
+import { FakeSshTransport } from "../transport/fake";
 
 const PIN = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 

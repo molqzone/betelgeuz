@@ -6,7 +6,7 @@ import {
   ExecRequest,
   HostKeyFingerprint,
   type LaunchRequest,
-} from "./index";
+} from "../transport";
 
 const PIN = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 

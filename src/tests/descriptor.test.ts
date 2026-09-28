@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { HardwareDescriptor } from "./descriptor";
+import type { HardwareDescriptor } from "../protocol/descriptor";
 
 describe("hardware descriptor shape", () => {
   it("tolerates missing fields as unknown", () => {

@@ -4,7 +4,7 @@ import type {
   CredentialSecrets,
   ProfileCatalog,
   TargetOverrides,
-} from "./index";
+} from "../protocol";
 import {
   ATTACH_PREFIX,
   ATTACH_STRATEGY_KEY,
@@ -25,7 +25,7 @@ import {
   TARGET_INLINE_PREFIX,
   TARGET_PROFILE_KEY,
   strategyKey,
-} from "./index";
+} from "../protocol";
 
 describe("settings shapes", () => {
   it("keeps the configuration key catalog stable", () => {

@@ -9,7 +9,7 @@ import {
   STRATEGY_ERRORS,
   isBetelgeuzError,
   renderErrorCatalog,
-} from "./errors";
+} from "../errors";
 
 describe("error catalog", () => {
   it("every code is namespaced and its metadata is complete", () => {

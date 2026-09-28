@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { BetelgeuzError } from "./errors";
-import { resolveProfile } from "./profile";
-import type { ProfileCatalog, TargetOverrides } from "./protocol";
+import { BetelgeuzError } from "../errors";
+import { resolveProfile } from "../profile";
+import type { ProfileCatalog, TargetOverrides } from "../protocol";
 
 const PIN = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
