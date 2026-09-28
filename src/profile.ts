@@ -52,11 +52,7 @@ export function resolveProfile(
     select(overrides.credentialRef, profile?.credentialRef) ?? incompleteProfile();
 
   const port = overrides.port ?? profile?.port ?? DEFAULT_SSH_PORT;
-  if (port === 0) {
-    throw new BetelgeuzError("config.invalid", {
-      detail: "SSH port must be between 1 and 65535",
-    });
-  }
+  validateU16(port, "SSH port must be between 1 and 65535");
   if (UNPRINTABLE.test(host)) {
     throw new BetelgeuzError("config.invalid", {
       detail: "SSH host must not contain whitespace",
@@ -65,18 +61,17 @@ export function resolveProfile(
 
   const keepaliveSeconds =
     overrides.keepaliveSeconds ?? profile?.keepaliveSeconds ?? DEFAULT_KEEPALIVE_SECONDS;
-  if (keepaliveSeconds === 0) {
-    throw new BetelgeuzError("config.invalid", {
-      detail: "SSH keepalive interval must be non-zero",
-    });
-  }
+  validateU16(keepaliveSeconds, "SSH keepalive interval must be between 1 and 65535");
 
-  const proxyChain = overrides.proxyChain ?? profile?.proxyChain ?? [];
+  const proxyChain = (overrides.proxyChain ?? profile?.proxyChain ?? []).map((hop) => ({
+    ...hop,
+    port: hop.port ?? DEFAULT_SSH_PORT,
+  }));
   for (const hop of proxyChain) {
     const valid =
       hop.host.trim() !== "" &&
       !UNPRINTABLE.test(hop.host) &&
-      hop.port !== 0 &&
+      isU16(hop.port) &&
       hop.username.trim() !== "" &&
       hop.credentialRef.trim() !== "" &&
       hop.hostKey.trim() !== "";
@@ -107,6 +102,16 @@ function nonEmpty(value: string | null | undefined): string | undefined {
   return value !== undefined && value !== null && value.trim() !== ""
     ? value
     : undefined;
+}
+
+function isU16(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
+function validateU16(value: number, detail: string): void {
+  if (!isU16(value)) {
+    throw new BetelgeuzError("config.invalid", { detail });
+  }
 }
 
 function select(

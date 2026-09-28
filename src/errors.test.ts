@@ -47,6 +47,12 @@ describe("BetelgeuzError", () => {
     expect(error.causeText).toContain("boom");
   });
 
+  it("every-phase codes require an explicit instance phase", () => {
+    expect(() => new BetelgeuzError("internal.unexpected")).toThrow(
+      /requires an explicit phase/
+    );
+  });
+
   it("cause text stays readable for non-error values", () => {
     const error = BetelgeuzError.wrapUnexpected("deploy", { code: 42 });
     expect(error.causeText).toContain('"code":42');

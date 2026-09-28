@@ -51,8 +51,8 @@ describe("module boundaries", () => {
     for (const file of files) {
       const source = readFileSync(file, "utf8");
       for (const line of source.split("\n")) {
-        if (/^export\s+(let|var)\s/.test(line)) {
-          expect.fail(`${file} exports mutable module state: ${line.trim()}`);
+        if (/^(let|var)\s/.test(line)) {
+          expect.fail(`${file} has module-level mutable state: ${line.trim()}`);
         }
       }
     }

@@ -20,8 +20,10 @@ export type Phase =
   | "artifact"
   | "deploy"
   | "lifecycle"
-  | "debug"
-  | "any";
+  | "debug";
+
+/** Catalog metadata: `any` marks codes that can occur in every phase. */
+export type CatalogPhase = Phase | "any";
 
 export type RemediationId =
   | "upgradeFrontend"
@@ -48,7 +50,7 @@ export type RemediationId =
   | "showLog";
 
 export interface ErrorDef {
-  readonly phase: Phase;
+  readonly phase: CatalogPhase;
   readonly retriable: boolean;
   readonly remediation: RemediationId;
   readonly summary: string;
@@ -268,7 +270,13 @@ export class BetelgeuzError extends Error {
     super(`betelgeuz.${code}: ${def.summary}${detail}`);
     this.name = "BetelgeuzError";
     this.code = code;
-    this.phase = context.phase ?? def.phase;
+    // `any` is catalog metadata, never an instance state: codes that can occur
+    // in every phase must carry the concrete phase they occurred in.
+    const phase = context.phase ?? (def.phase === "any" ? undefined : def.phase);
+    if (phase === undefined) {
+      throw new Error(`invariant violated: ${code} requires an explicit phase`);
+    }
+    this.phase = phase;
     this.retriable = def.retriable;
     this.remediation = def.remediation;
     this.targetState = context.targetState;

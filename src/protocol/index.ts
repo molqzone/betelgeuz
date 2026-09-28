@@ -15,6 +15,27 @@ export type {
   TargetOverrides,
   TargetProfile,
 } from "./config";
+export {
+  ATTACH_PREFIX,
+  ATTACH_STRATEGY_KEY,
+  CONFIG_KEY_PATTERNS,
+  DEPLOY_ARGS_KEY,
+  DEPLOY_ARTIFACT_KEY,
+  DEPLOY_CWD_KEY,
+  DEPLOY_ENVIRONMENT_KEY,
+  DEPLOY_EXECUTABLE_KEY,
+  DEPLOY_FILE_MODE_KEY,
+  DEPLOY_LOCAL_TARGET_KEY,
+  DEPLOY_REMOTE_PATH_KEY,
+  DEPLOY_RUN_COMMAND_KEY,
+  DEPLOY_RUN_MODE_KEY,
+  DEPLOY_SERVICE_UNIT_KEY,
+  FIXED_CONFIG_KEYS,
+  PROFILES_KEY,
+  TARGET_INLINE_PREFIX,
+  TARGET_PROFILE_KEY,
+  strategyKey,
+} from "./config";
 export type { HardwareDescriptor } from "./descriptor";
 
 import type { CredentialSecrets, ProfileCatalog, TargetOverrides } from "./config";

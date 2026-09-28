@@ -80,8 +80,16 @@ describe("resolveProfile", () => {
     expect(codeOf(() => resolveProfile({}, { ...base, port: 0 }))).toBe(
       "config.invalid"
     );
+    for (const port of [-1, 1.5, 65536]) {
+      expect(codeOf(() => resolveProfile({}, { ...base, port }))).toBe(
+        "config.invalid"
+      );
+    }
     expect(
       codeOf(() => resolveProfile({}, { ...base, keepaliveSeconds: 0 }))
+    ).toBe("config.invalid");
+    expect(
+      codeOf(() => resolveProfile({}, { ...base, keepaliveSeconds: 65536 }))
     ).toBe("config.invalid");
     expect(
       codeOf(() => resolveProfile({}, { ...base, host: "board local" }))
@@ -111,5 +119,29 @@ describe("resolveProfile", () => {
       ],
     };
     expect(resolveProfile({}, pinned).proxyChain).toHaveLength(1);
+  });
+
+  it("defaults omitted proxy hop ports and rejects invalid ones", () => {
+    const base: TargetOverrides = {
+      host: "board.local",
+      username: "root",
+      credentialRef: "board",
+    };
+    const resolved = resolveProfile({}, {
+      ...base,
+      proxyChain: [{ host: "jump.local", username: "jump", credentialRef: "jump", hostKey: PIN }],
+    });
+    expect(resolved.proxyChain[0]?.port).toBe(22);
+
+    for (const port of [0, 65536, 1.5]) {
+      expect(
+        codeOf(() =>
+          resolveProfile({}, {
+            ...base,
+            proxyChain: [{ host: "jump.local", port, username: "jump", credentialRef: "jump", hostKey: PIN }],
+          })
+        )
+      ).toBe("config.invalid");
+    }
   });
 });
