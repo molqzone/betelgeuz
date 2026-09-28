@@ -144,14 +144,14 @@ function publicProfile(resolved: ResolvedTargetProfile): ResolvedProfile {
 /** One-use credential lookup: the entry is consumed on use. */
 function passwordAuth(secrets: CredentialSecrets, credentialRef: string): Authentication {
   const material = secrets[credentialRef];
-  if (material === undefined) {
+  if (material == null) {
     throw new BetelgeuzError("ssh.auth-failed", {
       detail: `credential material for \`${credentialRef}\` was not supplied or was already used`,
     });
   }
   delete secrets[credentialRef];
   const password = material.password;
-  if (password === undefined) {
+  if (password == null) {
     throw new BetelgeuzError("ssh.auth-failed", {
       detail: "only password credentials are available for this attach",
     });

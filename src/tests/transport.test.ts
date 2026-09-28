@@ -82,6 +82,7 @@ describe("HostKeyFingerprint", () => {
 describe("Secret", () => {
   it("is redacted in every stringification", () => {
     const secret = new Secret("hunter2");
+    // eslint-disable-next-line @typescript-eslint/restrict-template-expressions -- template coercion is the behavior under test
     expect(`${secret}`).toBe("[REDACTED]");
     expect(JSON.stringify({ secret })).toContain("[REDACTED]");
     expect(secret.expose()).toBe("hunter2");

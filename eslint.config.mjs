@@ -14,6 +14,13 @@ export default [
     rules: {
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
+      // The transport contract mandates Promise-returning methods; synchronous
+      // implementations (the fake) legitimately carry no await.
+      "@typescript-eslint/require-await": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_" },
+      ],
     },
   },
   {
