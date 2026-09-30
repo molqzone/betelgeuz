@@ -19,6 +19,9 @@
   "extensionKind": [
     "ui"
   ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
       {
