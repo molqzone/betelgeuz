@@ -1,7 +1,9 @@
 /** VS Code configuration adapter for typed core profile inputs. */
 import * as vscode from "vscode";
 import { BetelgeuzError } from "../errors";
+import { resolveArtifactFile } from "../artifact/path";
 import { readArtifactRecord as readArtifactFile } from "../artifact/record";
+import { readRememberedArtifact, rememberArtifact } from "./artifact-memory";
 import type {
   ApplicationConfiguration,
   ArtifactRecord,
@@ -82,10 +84,11 @@ export function readStrategy(folder: vscode.WorkspaceFolder): string {
  * choice asks once and remembers the answer as this workspace's deployment
  * profile. */
 export async function resolveArtifact(
-  folder: vscode.WorkspaceFolder
+  folder: vscode.WorkspaceFolder,
+  storage: vscode.Memento
 ): Promise<ArtifactRecord> {
   if (readDeploySource(folder) === "manual") {
-    return await readArtifactRecord(folder);
+    return await readArtifactRecord(folder, storage);
   }
   const configured = nonEmptyString(
     optionalString(
@@ -128,17 +131,54 @@ function isAmbiguousWithoutChoice(error: unknown): boolean {
 }
 
 export async function readArtifactRecord(
-  folder: vscode.WorkspaceFolder
+  folder: vscode.WorkspaceFolder,
+  storage: vscode.Memento
 ): Promise<ArtifactRecord> {
   const config = folderConfiguration(folder);
-  const configured = requiredString(
+  const configured = optionalString(
     config.get<unknown>(DEPLOY_ARTIFACT_PATH_KEY),
     DEPLOY_ARTIFACT_PATH_KEY
   );
+  const path = await artifactPathFor(folder, storage, configured);
   return await readArtifactFile(
-    resolveArtifactPath(folder.uri.fsPath, configured),
+    path,
     config.get<string>("betelgeuz.deploy.localTarget", "artifact")
   );
+}
+
+/**
+ * Where the manual artifact lives: the configured path, or the one this
+ * workspace chose once. A configured path wins, so nothing remembered here can
+ * change what a setting asks for.
+ */
+async function artifactPathFor(
+  folder: vscode.WorkspaceFolder,
+  storage: vscode.Memento,
+  configured: string | null | undefined
+): Promise<string> {
+  // A configured path, or the one this workspace chose once, may name a file or
+  // the directory the build writes into.
+  if (configured !== undefined && configured !== null && configured.trim() !== "") {
+    return await resolveArtifactFile(resolveArtifactPath(folder.uri.fsPath, configured));
+  }
+  const remembered = readRememberedArtifact(storage, folder.uri.toString());
+  if (remembered !== undefined) {
+    return await resolveArtifactFile(remembered);
+  }
+  const chosen = await vscode.window.showOpenDialog({
+    canSelectFiles: true,
+    canSelectFolders: false,
+    openLabel: "Deploy this artifact",
+    title: "Choose the artifact this workspace deploys",
+  });
+  const file = chosen?.[0];
+  if (file === undefined) {
+    throw new BetelgeuzError("artifact.missing", {
+      detail: `${DEPLOY_ARTIFACT_PATH_KEY} is not set and no artifact was chosen`,
+    });
+  }
+  await rememberArtifact(storage, folder.uri.toString(), file.fsPath);
+  return file.fsPath;
 }
 
 export function readApplicationConfiguration(
