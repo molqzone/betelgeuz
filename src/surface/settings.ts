@@ -94,12 +94,12 @@ export async function resolveArtifact(
     )
   );
   try {
-    return await readCmakeArtifact(configured);
+    return await readCmakeArtifact(folder, configured);
   } catch (error) {
     if (configured !== undefined || !isAmbiguousWithoutChoice(error)) {
       throw error;
     }
-    const candidates = await listCmakeTargets();
+    const candidates = await listCmakeTargets(folder);
     const chosen = await vscode.window.showQuickPick(candidates, {
       placeHolder: "Select the CMake target this workspace deploys",
     });
@@ -111,7 +111,7 @@ export async function resolveArtifact(
       chosen,
       vscode.ConfigurationTarget.WorkspaceFolder
     );
-    return await readCmakeArtifact(chosen);
+    return await readCmakeArtifact(folder, chosen);
   }
 }
 

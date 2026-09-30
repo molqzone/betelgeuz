@@ -5,9 +5,9 @@
  * where a target's output landed, so this adapter hands the build directory to
  * the File API reader and selects the configured target from what it found. The
  * API surface consumed here is declared locally rather than pulled from the
- * extension's typings package: it is a handful of members, and a change in the
- * extension surfaces as an explicit "CMake Tools is unavailable" diagnostic
- * rather than as a compile error.
+ * extension's typings package: the members differ between releases and the
+ * extension reaches its own API only after it has scanned for kits, so a change
+ * or a slow start surfaces as an explicit diagnostic instead of a type error.
  */
 import * as vscode from "vscode";
 
@@ -22,25 +22,49 @@ import { readArtifactRecord } from "../artifact/record";
 import type { ArtifactRecord } from "../protocol";
 
 const CMAKE_TOOLS_ID = "ms-vscode.cmake-tools";
+/** CMake Tools reaches its API after its kit scan, and only then owns a project;
+ * neither is instant, and both are waited for rather than guessed at. */
+const API_WAIT_MS = 10_000;
+const PROJECT_WAIT_MS = 20_000;
+const POLL_MS = 250;
 
 /** The members of CMake Tools' API that Betelgeuz consumes. */
 interface CmakeToolsApi {
   getBuildDirectory?(): Promise<string | undefined>;
-  listBuildTargets?(): Promise<Array<string> | undefined>;
+  /** Present since 1.24; takes the folder the project belongs to. */
+  getProjectForUri?(uri: vscode.Uri): Promise<CmakeProject | undefined> | CmakeProject | undefined;
+  getProject?(): Promise<CmakeProject | undefined> | CmakeProject | undefined;
 }
 
+interface CmakeProject {
+  buildDirectory?(): Promise<string | null | undefined>;
+}
+
+/** Recent releases activate to an object holding `getApi(version)`. */
+type CmakeToolsExports = CmakeToolsApi & {
+  getApi?: () => Promise<CmakeToolsApi> | CmakeToolsApi;
+};
+
 /** Reads the configured target's artifact through CMake Tools. */
-export async function readCmakeArtifact(localTarget: string | undefined): Promise<ArtifactRecord> {
-  const buildDirectory = await cmakeBuildDirectory();
+export async function readCmakeArtifact(
+  folder: vscode.WorkspaceFolder,
+  localTarget: string | undefined
+): Promise<ArtifactRecord> {
+  const api = await cmakeApi();
+  const buildDirectory = await buildDirectoryOf(api, folder);
   const targets = await readCmakeTargets(buildDirectory);
   const path = selectCmakeArtifact(targets, localTarget);
   return await readArtifactRecord(path, targetNameFor(targets, path));
 }
 
 /** The executable targets a workspace can choose between. */
-export async function listCmakeTargets(): Promise<Array<string>> {
-  const buildDirectory = await cmakeBuildDirectory();
-  return deployableTargets(await readCmakeTargets(buildDirectory)).map((target) => target.name);
+export async function listCmakeTargets(
+  folder: vscode.WorkspaceFolder
+): Promise<Array<string>> {
+  const api = await cmakeApi();
+  return deployableTargets(await readCmakeTargets(await buildDirectoryOf(api, folder))).map(
+    (target) => target.name
+  );
 }
 
 function targetNameFor(targets: ReadonlyArray<CmakeTarget>, artifact: string): string {
@@ -48,9 +72,43 @@ function targetNameFor(targets: ReadonlyArray<CmakeTarget>, artifact: string): s
   return owner?.name ?? "artifact";
 }
 
-async function activate(
-  extension: vscode.Extension<CmakeToolsApi>
-): Promise<CmakeToolsApi> {
+async function cmakeApi(): Promise<CmakeToolsApi> {
+  const extension = vscode.extensions.getExtension<CmakeToolsExports>(CMAKE_TOOLS_ID);
+  if (extension === undefined) {
+    throw new BetelgeuzError("artifact.cmake-unavailable", {
+      detail: `${CMAKE_TOOLS_ID} is not installed`,
+    });
+  }
+  const exports = await activate(extension);
+  const read = async (): Promise<CmakeToolsApi | undefined> => {
+    try {
+      const api = typeof exports.getApi === "function" ? await exports.getApi() : exports;
+      return typeof api?.getBuildDirectory === "function" ||
+        typeof api?.getProject === "function"
+        ? api
+        : undefined;
+    } catch {
+      // The extension is still starting up; its API is not there yet.
+      return undefined;
+    }
+  };
+
+  const deadline = Date.now() + API_WAIT_MS;
+  for (;;) {
+    const api = await read();
+    if (api !== undefined) {
+      return api;
+    }
+    if (Date.now() >= deadline) {
+      throw new BetelgeuzError("artifact.cmake-unavailable", {
+        detail: `${CMAKE_TOOLS_ID} did not expose its API within ${API_WAIT_MS} ms`,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+}
+
+async function activate(extension: vscode.Extension<CmakeToolsExports>): Promise<CmakeToolsExports> {
   try {
     return await extension.activate();
   } catch (error) {
@@ -61,44 +119,37 @@ async function activate(
   }
 }
 
-async function buildDirectoryOf(api: CmakeToolsApi): Promise<string> {
-  try {
-    const buildDirectory = await api.getBuildDirectory?.();
-    if (buildDirectory === undefined || buildDirectory.trim() === "") {
+async function buildDirectoryOf(
+  api: CmakeToolsApi,
+  folder: vscode.WorkspaceFolder
+): Promise<string> {
+  const deadline = Date.now() + PROJECT_WAIT_MS;
+  for (;;) {
+    const directory = (await api.getBuildDirectory?.()) ??
+      (await (await projectFor(api, folder))?.buildDirectory?.());
+    if (directory !== undefined && directory !== null && directory.trim() !== "") {
+      return directory;
+    }
+    if (Date.now() >= deadline) {
       throw new BetelgeuzError("artifact.missing", {
-        detail: "configure the CMake project before deploying",
+        detail: `CMake Tools reported no build directory for this workspace within ${PROJECT_WAIT_MS} ms`,
       });
     }
-    return buildDirectory;
-  } catch (error) {
-    if (error instanceof BetelgeuzError) {
-      throw error;
-    }
-    throw new BetelgeuzError("artifact.cmake-unavailable", {
-      detail: `${CMAKE_TOOLS_ID} did not report a build directory`,
-      cause: error,
-    });
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
 }
 
-async function cmakeBuildDirectory(): Promise<string> {
-  const extension = vscode.extensions.getExtension<CmakeToolsApi>(CMAKE_TOOLS_ID);
-  if (extension === undefined) {
-    throw new BetelgeuzError("artifact.cmake-unavailable", {
-      detail: `${CMAKE_TOOLS_ID} is not installed`,
-    });
+/**
+ * The project object for this workspace. `getProjectForUri` is the member
+ * 1.24 exposes; a bare `getProject` on a release that expects a URI throws, so
+ * it is only used when the Uri member is absent.
+ */
+async function projectFor(
+  api: CmakeToolsApi,
+  folder: vscode.WorkspaceFolder
+): Promise<CmakeProject | undefined> {
+  if (api.getProjectForUri !== undefined) {
+    return await api.getProjectForUri(folder.uri);
   }
-  const api = await activate(extension);
-  if (api?.getBuildDirectory === undefined) {
-    throw new BetelgeuzError("artifact.cmake-unavailable", {
-      detail: `${CMAKE_TOOLS_ID} exposes no build directory in this version`,
-    });
-  }
-  const buildDirectory = await buildDirectoryOf(api);
-  if (buildDirectory === undefined || buildDirectory.trim() === "") {
-    throw new BetelgeuzError("artifact.missing", {
-      detail: "configure the CMake project before deploying",
-    });
-  }
-  return buildDirectory;
+  return await api.getProject?.();
 }

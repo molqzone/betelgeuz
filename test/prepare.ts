@@ -7,6 +7,7 @@
 import { copyFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+
 /** A run starts from a clean profile: no enrolled host key or stored credential
  * from an earlier run, so each run exercises the same path. */
 const userData = join(__dirname, "..", ".vscode-test", "user-data");
@@ -30,12 +31,14 @@ const USER = BETELGEUZ_TEST_USER ?? "root";
 const CREDENTIAL = BETELGEUZ_TEST_CREDENTIAL_REF ?? "e2e-board";
 const REMOTE_PATH = BETELGEUZ_TEST_REMOTE_PATH ?? "/tmp/betelgeuz-e2e/app";
 
+
 async function main(): Promise<void> {
-  for (const [name, value] of Object.entries({
-    BETELGEUZ_TEST_ARTIFACT: BETELGEUZ_TEST_ARTIFACT,
+  const required: Record<string, string | undefined> = {
     BETELGEUZ_TEST_HOST: BETELGEUZ_TEST_HOST,
     BETELGEUZ_TEST_PASSWORD: BETELGEUZ_TEST_PASSWORD,
-  })) {
+    BETELGEUZ_TEST_ARTIFACT: BETELGEUZ_TEST_ARTIFACT,
+  };
+  for (const [name, value] of Object.entries(required)) {
     if (value === undefined || value === "") {
       throw new Error(`${name} is required: point the run at a board and an artifact`);
     }
@@ -70,6 +73,7 @@ async function main(): Promise<void> {
   await copyFile(BETELGEUZ_TEST_ARTIFACT as string, artifact);
   const info = await stat(artifact);
   console.log(`e2e: artifact ${info.size} bytes; board ${BETELGEUZ_TEST_HOST}`);
+  process.env.BETELGEUZ_TEST_EXPECT_SIZE = String(info.size);
 }
 
 main().catch((error: unknown) => {

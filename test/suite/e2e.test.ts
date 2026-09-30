@@ -28,25 +28,6 @@ const PASSWORD = process.env.BETELGEUZ_TEST_PASSWORD ?? "";
 const REMOTE_APP = "/tmp/betelgeuz-e2e/app";
 
 const shown: Array<{ level: string; text: string }> = [];
-/** The extension's own OutputChannel, captured so a failure's detail is visible
- * rather than only its summary. Stubbed at load time because the controller
- * creates the channel when it activates. */
-const logLines: Array<string> = [];
-
-function stubOutputChannel(): void {
-  vscode.window.createOutputChannel = ((name: string) => ({
-    name,
-    append: (value: string) => logLines.push(value),
-    appendLine: (value: string) => logLines.push(value),
-    replace: (value: string) => logLines.push(value),
-    clear: () => undefined,
-    show: () => undefined,
-    hide: () => undefined,
-    dispose: () => undefined,
-  })) as unknown as typeof vscode.window.createOutputChannel;
-}
-
-stubOutputChannel();
 
 /** Deterministic answers to whatever the surface asks. */
 function stubDialogs(): void {
@@ -110,31 +91,6 @@ async function onBoard(command: Array<string>): Promise<string> {
   }
 }
 
-/** Polls the status command until the run reaches the wanted state: the channel
- * closes after the command has already reported running. */
-async function waitForApplicationState(pattern: RegExp): Promise<string> {
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    await vscode.commands.executeCommand("betelgeuz.status");
-    const latest = shown
-      .filter((entry) => entry.level === "info")
-      .map((entry) => entry.text)
-      .filter((text) => /target application:/.test(text))
-      .pop();
-    if (latest !== undefined && pattern.test(latest)) {
-      return latest;
-    }
-    if (Date.now() > deadline) {
-      return latest ?? "no status reported";
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-}
-
-function messagesAt(level: string): Array<string> {
-  return shown.filter((entry) => entry.level === level).map((entry) => entry.text);
-}
-
 /** Runs the same readers the surface runs, so an invalid setting reports which
  * one and why instead of only the summary the notification carries. */
 function settingDiagnosis(): Array<string> {
@@ -160,15 +116,39 @@ function settingDiagnosis(): Array<string> {
   return problems;
 }
 
+function messagesAt(level: string): Array<string> {
+  return shown.filter((entry) => entry.level === level).map((entry) => entry.text);
+}
+
+/** Polls the status command until the run reaches the wanted state: the channel
+ * closes after the command has already reported running. */
+async function waitForApplicationState(pattern: RegExp): Promise<string> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    await vscode.commands.executeCommand("betelgeuz.status");
+    const latest = shown
+      .filter((entry) => entry.level === "info")
+      .map((entry) => entry.text)
+      .filter((text) => /target application:/.test(text))
+      .pop();
+    if (latest !== undefined && pattern.test(latest)) {
+      return latest;
+    }
+    if (Date.now() > deadline) {
+      return latest ?? "no status reported";
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 suite("betelgeuz surface commands", () => {
-  test("the fixture workspace's settings parse", () => {
-    assert.deepEqual(settingDiagnosis(), []);
-  });
-
-
   setup(async () => {
     stubDialogs();
     await onBoard(["/usr/bin/rm", "-f", REMOTE_APP]);
+  });
+
+  test("the fixture workspace's settings parse", () => {
+    assert.deepEqual(settingDiagnosis(), []);
   });
 
   test("connects, enrolls the host key, and reads the descriptor", async () => {
@@ -178,7 +158,7 @@ suite("betelgeuz surface commands", () => {
       text.startsWith("Betelgeuz connected to")
     );
     assert.ok(connected, `notifications: ${JSON.stringify(messagesAt("info"))}`);
-    assert.deepEqual(messagesAt("error"), []);
+    assert.deepEqual(messagesAt("error"), [], JSON.stringify(shown, null, 2));
   });
 
   test("deploys the workspace's artifact", async () => {
@@ -186,7 +166,7 @@ suite("betelgeuz surface commands", () => {
 
     const listing = await onBoard(["/usr/bin/ls", "-l", REMOTE_APP]);
     assert.match(listing, /-rwxr-xr-x/, `remote path ${REMOTE_APP}: ${listing}`);
-    assert.deepEqual(messagesAt("error"), []);
+    assert.deepEqual(messagesAt("error"), [], JSON.stringify(shown, null, 2));
   });
 
   test("runs the deployed application and reports its exit", async () => {
@@ -194,14 +174,14 @@ suite("betelgeuz surface commands", () => {
 
     const reported = await waitForApplicationState(/exited/);
     assert.match(reported, /target application: exited/, `notifications: ${JSON.stringify(shown)}`);
-    assert.deepEqual(messagesAt("error"), []);
+    assert.deepEqual(messagesAt("error"), [], JSON.stringify(shown, null, 2));
   });
 
   test("stops the application and disconnects", async () => {
     await vscode.commands.executeCommand("betelgeuz.stop");
     await vscode.commands.executeCommand("betelgeuz.disconnect");
 
-    assert.deepEqual(messagesAt("error"), []);
+    assert.deepEqual(messagesAt("error"), [], JSON.stringify(shown, null, 2));
     assert.equal(await onBoard(["/usr/bin/pgrep", "-af", "betelgeuz-e2e"]), "");
   });
 });

@@ -11,3 +11,6 @@ out-test/
 .vscode-test/
 test/fixtures/workspace/artifact
 test/fixtures/workspace/.vscode/settings.json
+/test/fixtures/workspace/build/
+test/fixtures/workspace/.vscode/cmake-kits.json
+.vscode-test/xdg-data/
