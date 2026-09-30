@@ -35,6 +35,7 @@ export {
   PROFILES_KEY,
   TARGET_INLINE_PREFIX,
   TARGET_PROFILE_KEY,
+  resolveArtifactPath,
   strategyKey,
 } from "./config";
 export type { HardwareDescriptor } from "./descriptor";

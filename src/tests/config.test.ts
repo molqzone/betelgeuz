@@ -14,6 +14,7 @@ import {
   DEPLOY_ARGS_KEY,
   DEPLOY_ARTIFACT_KEY,
   DEPLOY_ARTIFACT_PATH_KEY,
+  resolveArtifactPath,
   DEPLOY_CWD_KEY,
   DEPLOY_ENVIRONMENT_KEY,
   DEPLOY_EXECUTABLE_KEY,
@@ -62,6 +63,16 @@ describe("settings shapes", () => {
       ]
     `);
     expect(CONFIG_KEY_PATTERNS).toEqual(["betelgeuz.target.", "betelgeuz.attach."]);
+  });
+
+  it("resolves a configured artifact path against the workspace folder", () => {
+    expect(resolveArtifactPath("/workspace/project", "build/app")).toBe(
+      "/workspace/project/build/app"
+    );
+    expect(resolveArtifactPath("/workspace/project", "./build/app")).toBe(
+      "/workspace/project/build/app"
+    );
+    expect(resolveArtifactPath("/workspace/project", "/opt/app")).toBe("/opt/app");
   });
 
   it("contributes every fixed setting and the implemented target commands", () => {

@@ -18,6 +18,8 @@ export type CredentialMaterial = {
   privateKey?: SensitiveString | null;
 };
 
+import { isAbsolute, join } from "node:path";
+
 /** One-use credential material indexed by the profile credential reference. */
 export type CredentialSecrets = Record<string, CredentialMaterial>;
 
@@ -97,6 +99,15 @@ export const DEPLOY_ARTIFACT_KEY = "betelgeuz.deploy.artifact";
 
 /** Phase 1 manual artifact path; CMake Tools owns this handoff later. */
 export const DEPLOY_ARTIFACT_PATH_KEY = "betelgeuz.deploy.artifactPath";
+
+/**
+ * A configured artifact path is workspace-relative unless it is absolute, and
+ * the extension host's working directory is neither the workspace nor the
+ * workspace folder — so resolve it against the folder explicitly.
+ */
+export function resolveArtifactPath(folderPath: string, configured: string): string {
+  return isAbsolute(configured) ? configured : join(folderPath, configured);
+}
 
 /** Remote destination for the selected artifact. */
 export const DEPLOY_REMOTE_PATH_KEY = "betelgeuz.deploy.remotePath";

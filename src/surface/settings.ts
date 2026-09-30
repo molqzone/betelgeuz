@@ -3,7 +3,6 @@ import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-
 import { BetelgeuzError } from "../errors";
 import type {
   ApplicationConfiguration,
@@ -16,6 +15,7 @@ import type {
 import {
   ATTACH_STRATEGY_KEY,
   PROFILES_KEY,
+  resolveArtifactPath,
   TARGET_INLINE_PREFIX,
   TARGET_PROFILE_KEY,
   DEPLOY_ARGS_KEY,
@@ -77,10 +77,11 @@ export async function readArtifactRecord(
   folder: vscode.WorkspaceFolder
 ): Promise<ArtifactRecord> {
   const config = folderConfiguration(folder);
-  const path = requiredString(
+  const configured = requiredString(
     config.get<unknown>(DEPLOY_ARTIFACT_PATH_KEY),
     DEPLOY_ARTIFACT_PATH_KEY
   );
+  const path = resolveArtifactPath(folder.uri.fsPath, configured);
   try {
     const info = await stat(path);
     if (!info.isFile()) {
