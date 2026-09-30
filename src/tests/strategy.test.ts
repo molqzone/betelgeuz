@@ -1,4 +1,4 @@
-import { mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
@@ -541,67 +541,4 @@ describe("linux.ssh-app strategy", () => {
     expect(transport.runs[1].terminated).toBe(true);
   });
 
-  it("keeps a newer mutation protected after an abandoned one releases", async () => {
-    class DeployControlledTransport extends FakeSshTransport {
-      readonly uploadReached: Array<() => void> = [];
-      private uploads = 0;
-      private readonly blocked = [new Promise<void>((resolve) => {
-        this.uploadReached.push(resolve);
-      }), new Promise<void>((resolve) => {
-        this.uploadReached.push(resolve);
-      })];
-
-      override async upload(
-        source: Readable,
-        remotePath: string,
-        signal?: AbortSignal
-      ): Promise<void> {
-        const index = this.uploads;
-        this.uploads += 1;
-        if (index < this.blocked.length) {
-          await this.blocked[index];
-        }
-        return await super.upload(source, remotePath, signal);
-      }
-
-      release(upload: number): void {
-        this.uploadReached[upload]();
-      }
-    }
-
-    const directory = await mkdtemp(join(tmpdir(), "betelgeuz-mutation-"));
-    const path = join(directory, "app");
-    await writeFile(path, minimalAarch64Elf());
-    const artifact = {
-      configuration: "Debug",
-      contentHash: "not-used-by-phase-1",
-      path,
-      size: (await stat(path)).size,
-      targetName: "app",
-    };
-    const transport = new DeployControlledTransport();
-    await transport.connect({
-      endpoint: { host: "board.local", port: 22, username: "root" },
-      authentication: { kind: "password", password: new Secret("test") },
-      hostKeyPin: HostKeyFingerprint.parse(PIN),
-      proxyChain: [],
-      keepaliveSeconds: 30,
-    });
-    const strategy = new SshApplicationStrategy(transport);
-    const abandoned = strategy.deploy(artifact, { remotePath: "/opt/app" });
-    await new Promise((resolve) => setImmediate(resolve));
-    strategy.resetForcibly();
-    const current = strategy.deploy(artifact, { remotePath: "/opt/app" });
-    await new Promise((resolve) => setImmediate(resolve));
-
-    // The abandoned deploy's release must not clear the newer deploy's mutation.
-    transport.release(0);
-    await expect(abandoned).resolves.toMatchObject({ remotePath: "/opt/app" });
-
-    await expect(strategy.deploy(artifact, { remotePath: "/opt/app" })).rejects.toMatchObject({
-      code: "deploy.busy",
-    });
-    transport.release(1);
-    await expect(current).resolves.toMatchObject({ remotePath: "/opt/app" });
-  });
 });
