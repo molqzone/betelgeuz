@@ -1,9 +1,7 @@
 /** VS Code configuration adapter for typed core profile inputs. */
 import * as vscode from "vscode";
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
 import { BetelgeuzError } from "../errors";
+import { readArtifactRecord as readArtifactFile } from "../artifact/record";
 import type {
   ApplicationConfiguration,
   ArtifactRecord,
@@ -137,30 +135,10 @@ export async function readArtifactRecord(
     config.get<unknown>(DEPLOY_ARTIFACT_PATH_KEY),
     DEPLOY_ARTIFACT_PATH_KEY
   );
-  const path = resolveArtifactPath(folder.uri.fsPath, configured);
-  try {
-    const info = await stat(path);
-    if (!info.isFile()) {
-      throw new BetelgeuzError("artifact.missing", {
-        detail: `${DEPLOY_ARTIFACT_PATH_KEY} must point to a regular file`,
-      });
-    }
-    const hash = createHash("sha256");
-    for await (const chunk of createReadStream(path) as AsyncIterable<Buffer>) {
-      hash.update(chunk);
-    }
-    return {
-      contentHash: hash.digest("hex"),
-      path,
-      size: info.size,
-      targetName: config.get<string>("betelgeuz.deploy.localTarget", "artifact"),
-    };
-  } catch (error) {
-    if (error instanceof BetelgeuzError) {
-      throw error;
-    }
-    throw new BetelgeuzError("artifact.missing", { cause: error });
-  }
+  return await readArtifactFile(
+    resolveArtifactPath(folder.uri.fsPath, configured),
+    config.get<string>("betelgeuz.deploy.localTarget", "artifact")
+  );
 }
 
 export function readApplicationConfiguration(

@@ -18,6 +18,7 @@ import {
   selectCmakeArtifact,
   type CmakeTarget,
 } from "../artifact/cmake";
+import { readArtifactRecord } from "../artifact/record";
 import type { ArtifactRecord } from "../protocol";
 
 const CMAKE_TOOLS_ID = "ms-vscode.cmake-tools";
@@ -33,7 +34,7 @@ export async function readCmakeArtifact(localTarget: string | undefined): Promis
   const buildDirectory = await cmakeBuildDirectory();
   const targets = await readCmakeTargets(buildDirectory);
   const path = selectCmakeArtifact(targets, localTarget);
-  return await artifactRecord(path, targetNameFor(targets, path));
+  return await readArtifactRecord(path, targetNameFor(targets, path));
 }
 
 /** The executable targets a workspace can choose between. */
@@ -45,44 +46,6 @@ export async function listCmakeTargets(): Promise<Array<string>> {
 function targetNameFor(targets: ReadonlyArray<CmakeTarget>, artifact: string): string {
   const owner = targets.find((target) => target.artifacts.includes(artifact));
   return owner?.name ?? "artifact";
-}
-
-async function artifactRecord(path: string, targetName: string): Promise<ArtifactRecord> {
-  const uri = vscode.Uri.file(path);
-  const info = await statFile(uri);
-  if (info === undefined || info.type !== vscode.FileType.File) {
-    throw new BetelgeuzError("artifact.missing", {
-      detail: `${path} is not a regular file; build the target first`,
-    });
-  }
-  const bytes = await vscode.workspace.fs.readFile(uri);
-  return {
-    contentHash: await hash(bytes),
-    path,
-    size: info.size,
-    targetName,
-  };
-}
-
-async function statFile(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {
-  try {
-    return await vscode.workspace.fs.stat(uri);
-  } catch {
-    return undefined;
-  }
-}
-
-async function hash(bytes: Uint8Array): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  if (subtle === undefined) {
-    throw new BetelgeuzError("artifact.missing", {
-      detail: "the extension host exposes no Web Crypto API to hash the artifact",
-    });
-  }
-  const digest = await subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 async function activate(
