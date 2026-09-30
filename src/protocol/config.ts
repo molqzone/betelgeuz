@@ -97,6 +97,12 @@ export const DEPLOY_LOCAL_TARGET_KEY = "betelgeuz.deploy.localTarget";
 /** Optional suffix or pattern for selecting one artifact in a later phase. */
 export const DEPLOY_ARTIFACT_KEY = "betelgeuz.deploy.artifact";
 
+/** Where the artifact comes from: CMake Tools (Phase 2) or the manual path. */
+export const DEPLOY_SOURCE_KEY = "betelgeuz.deploy.source";
+
+export const DEPLOY_SOURCES = ["cmake", "manual"] as const;
+export type DeploySource = (typeof DEPLOY_SOURCES)[number];
+
 /** Phase 1 manual artifact path; CMake Tools owns this handoff later. */
 export const DEPLOY_ARTIFACT_PATH_KEY = "betelgeuz.deploy.artifactPath";
 
@@ -144,6 +150,7 @@ export const FIXED_CONFIG_KEYS = [
   DEPLOY_LOCAL_TARGET_KEY,
   DEPLOY_ARTIFACT_PATH_KEY,
   DEPLOY_ARTIFACT_KEY,
+  DEPLOY_SOURCE_KEY,
   DEPLOY_REMOTE_PATH_KEY,
   DEPLOY_EXECUTABLE_KEY,
   DEPLOY_ARGS_KEY,

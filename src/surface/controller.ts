@@ -24,8 +24,8 @@ import {
   credentialFor,
   folderConfiguration,
   readApplicationConfiguration,
-  readArtifactRecord,
   readProfileCatalog,
+  resolveArtifact,
   readStrategy,
   readTarget,
   saveHostKey,
@@ -363,7 +363,7 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.requireAttached(folder);
-    const artifact = await readArtifactRecord(folder);
+    const artifact = await resolveArtifact(folder);
     const configuration = readApplicationConfiguration(folder);
     const result = await this.withCancellableProgress(
       `Deploying ${artifact.targetName}`,

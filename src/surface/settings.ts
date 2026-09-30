@@ -14,6 +14,9 @@ import type {
 } from "../protocol";
 import {
   ATTACH_STRATEGY_KEY,
+  DEPLOY_LOCAL_TARGET_KEY,
+  DEPLOY_SOURCE_KEY,
+  DEPLOY_SOURCES,
   PROFILES_KEY,
   resolveArtifactPath,
   TARGET_INLINE_PREFIX,
@@ -27,7 +30,10 @@ import {
   DEPLOY_REMOTE_PATH_KEY,
   DEPLOY_RUN_MODE_KEY,
   DEPLOY_SERVICE_UNIT_KEY,
+  type DeploySource,
 } from "../protocol";
+import { isBetelgeuzError } from "../errors";
+import { listCmakeTargets, readCmakeArtifact } from "./cmake";
 
 export function readProfileCatalog(): ProfileCatalog {
   const value = vscode.workspace.getConfiguration().get<unknown>(PROFILES_KEY, {});
@@ -73,6 +79,56 @@ export function readStrategy(folder: vscode.WorkspaceFolder): string {
 }
 
 /** Reads the Phase 1 manual artifact and structured application settings. */
+/** Reads the artifact a deploy activates, from whichever source the workspace
+ * configured. A CMake project that offers several executables and no configured
+ * choice asks once and remembers the answer as this workspace's deployment
+ * profile. */
+export async function resolveArtifact(
+  folder: vscode.WorkspaceFolder
+): Promise<ArtifactRecord> {
+  if (readDeploySource(folder) === "manual") {
+    return await readArtifactRecord(folder);
+  }
+  const configured = nonEmptyString(
+    optionalString(
+      folderConfiguration(folder).get<unknown>(DEPLOY_LOCAL_TARGET_KEY),
+      DEPLOY_LOCAL_TARGET_KEY
+    )
+  );
+  try {
+    return await readCmakeArtifact(configured);
+  } catch (error) {
+    if (configured !== undefined || !isAmbiguousWithoutChoice(error)) {
+      throw error;
+    }
+    const candidates = await listCmakeTargets();
+    const chosen = await vscode.window.showQuickPick(candidates, {
+      placeHolder: "Select the CMake target this workspace deploys",
+    });
+    if (chosen === undefined) {
+      throw error;
+    }
+    await folderConfiguration(folder).update(
+      DEPLOY_LOCAL_TARGET_KEY,
+      chosen,
+      vscode.ConfigurationTarget.WorkspaceFolder
+    );
+    return await readCmakeArtifact(chosen);
+  }
+}
+
+function readDeploySource(folder: vscode.WorkspaceFolder): DeploySource {
+  const value = optionalString(
+    folderConfiguration(folder).get<unknown>(DEPLOY_SOURCE_KEY),
+    DEPLOY_SOURCE_KEY
+  );
+  return DEPLOY_SOURCES.includes(value as DeploySource) ? (value as DeploySource) : "cmake";
+}
+
+function isAmbiguousWithoutChoice(error: unknown): boolean {
+  return isBetelgeuzError(error) && error.code === "artifact.ambiguous";
+}
+
 export async function readArtifactRecord(
   folder: vscode.WorkspaceFolder
 ): Promise<ArtifactRecord> {

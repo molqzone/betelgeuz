@@ -263,7 +263,7 @@ Strategy-specific attach configuration lives in the same settings namespace unde
 }
 ```
 
-The `betelgeuz.deploy.localTarget` entry identifies the target selected in CMake Tools whose existing artifact is consumed; it does not configure or invoke a Betelgeuz build step. During the Phase 1 manual slice, `betelgeuz.deploy.artifactPath` supplies that existing file directly; CMake Tools handoff replaces this setting in Phase 2. `executable`, `args`, `cwd`, `environment`, and `fileMode` are structured launch/deploy settings; they are never concatenated into an arbitrary shell command. In service mode, the pre-provisioned unit owns the effective command and environment, while these settings are used for foreground mode only. The `betelgeuz.deploy.artifact` key for multi-artifact targets arrives in a later phase; the MVP deploys only targets with exactly one artifact. Each strategy validates only its own keys under `betelgeuz.attach.<strategy>.*`; keys belonging to another strategy are ignored.
+The `betelgeuz.deploy.localTarget` entry identifies the target selected in CMake Tools whose existing artifact is consumed; it does not configure or invoke a Betelgeuz build step. `betelgeuz.deploy.source` selects the source: `cmake` (the default) resolves that artifact through CMake Tools, and `manual` uses `betelgeuz.deploy.artifactPath` to name the file directly — a workspace-relative path resolves against the workspace folder. `executable`, `args`, `cwd`, `environment`, and `fileMode` are structured launch/deploy settings; they are never concatenated into an arbitrary shell command. In service mode, the pre-provisioned unit owns the effective command and environment, while these settings are used for foreground mode only. The `betelgeuz.deploy.artifact` key for multi-artifact targets arrives in a later phase; the MVP deploys only targets with exactly one artifact. Each strategy validates only its own keys under `betelgeuz.attach.<strategy>.*`; keys belonging to another strategy are ignored.
 
 Passwords, private keys, and private-key passphrases must not be stored in ordinary workspace settings. Use VS Code SecretStorage or the frontend's equivalent protected store for credential material and host-key enrollment data. The core receives only the credential it needs for the active session.
 
@@ -354,6 +354,7 @@ The initial catalog:
 | `artifact.runtime-incompatible` | artifact | ELF ABI, dynamic loader, or target runtime is incompatible | check the target sysroot/libc and rebuild for the target | no |
 | `artifact.runtime-probe-failed` | artifact | reading the target runtime information for deployment failed | retry | yes |
 | `artifact.ambiguous` | artifact | target produces multiple artifacts; the single-artifact rule applies in the MVP | deploy a single-artifact target (selection arrives in a later phase) | no |
+| `artifact.cmake-unavailable` | artifact | CMake Tools is not installed, does not activate, or reports no build directory | install or configure CMake Tools | no |
 | `deploy.busy` | deploy / lifecycle | another mutating operation is running | retry after it finishes | yes |
 | `deploy.cancelled` | deploy | cancelled before the commit point; target unchanged | informational | no |
 | `operation.cancelled` | any | a user-cancelled operation stopped before completion | informational | no |
@@ -517,6 +518,8 @@ acceptance gates.
 - Add the standalone `Deploy` command; Deploy must not trigger a build.
 - Support a workspace-level deployment profile for different binaries or boards.
 - Add cancellation and clear failure reporting for artifact resolution and deploy.
+
+Implementation status: `betelgeuz.deploy.source` selects where the artifact comes from — `cmake` (default) or `manual`, where `betelgeuz.deploy.artifactPath` still supplies the file itself. CMake Tools publishes the build directory and the target names but not a target's output path, so the artifact path comes from the File API reply under the build directory: the index names the codemodel, the codemodel names the target files, and a target file's `artifacts` resolve against the build directory. Selection applies the exactly-one rule to the target named by `betelgeuz.deploy.localTarget`; when the workspace has no choice and the project declares several executables, `Deploy` asks once and records the answer as that workspace's deployment profile. A target producing several artifacts, a target that no longer exists, and a project that was never configured each report the documented `artifact.ambiguous` or `artifact.missing` error; a missing or unactivatable CMake Tools reports `artifact.cmake-unavailable`. Resolution never invokes configure or build.
 
 ### Phase 3: Reconnect and state reconciliation
 

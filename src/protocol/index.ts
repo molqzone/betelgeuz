@@ -28,6 +28,8 @@ export {
   DEPLOY_FILE_MODE_KEY,
   DEPLOY_LOCAL_TARGET_KEY,
   DEPLOY_REMOTE_PATH_KEY,
+  DEPLOY_SOURCE_KEY,
+  DEPLOY_SOURCES,
   DEPLOY_RUN_COMMAND_KEY,
   DEPLOY_RUN_MODE_KEY,
   DEPLOY_SERVICE_UNIT_KEY,
@@ -40,7 +42,13 @@ export {
 } from "./config";
 export type { HardwareDescriptor } from "./descriptor";
 
-import type { CredentialSecrets, ProfileCatalog, TargetOverrides } from "./config";
+import type {
+  CredentialSecrets,
+  DeploySource,
+  ProfileCatalog,
+  TargetOverrides,
+} from "./config";
+export type { DeploySource };
 import type { HardwareDescriptor } from "./descriptor";
 
 export type ConnectionState =

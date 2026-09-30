@@ -46,6 +46,7 @@ export type RemediationId =
   | "restorePreviousVersion"
   | "checkPrivileges"
   | "upgradeTargetSftpServer"
+  | "installCmakeTools"
   | "installGdbserver"
   | "inspectTrace"
   | "showLog";
@@ -163,6 +164,12 @@ export const COMMON_ERRORS = {
     retriable: true,
     remediation: "retry",
     summary: "Reading the target runtime information for deployment failed.",
+  },
+  "artifact.cmake-unavailable": {
+    phase: "artifact",
+    retriable: false,
+    remediation: "installCmakeTools",
+    summary: "CMake Tools is not available to resolve the workspace's artifact.",
   },
   "artifact.ambiguous": {
     phase: "artifact",

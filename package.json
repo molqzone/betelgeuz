@@ -126,6 +126,13 @@
         "betelgeuz.deploy.localTarget": { "type": "string", "scope": "resource" },
         "betelgeuz.deploy.artifactPath": { "type": "string", "scope": "resource" },
         "betelgeuz.deploy.artifact": { "type": "string", "scope": "resource" },
+        "betelgeuz.deploy.source": {
+          "type": "string",
+          "enum": ["cmake", "manual"],
+          "default": "cmake",
+          "scope": "resource",
+          "markdownDescription": "Where the deployed artifact comes from: the CMake Tools target this workspace selects, or `betelgeuz.deploy.artifactPath` for a file supplied by hand."
+        },
         "betelgeuz.deploy.remotePath": { "type": "string", "scope": "resource" },
         "betelgeuz.deploy.executable": { "type": "string", "scope": "resource" },
         "betelgeuz.deploy.args": { "type": "array", "items": { "type": "string" }, "scope": "resource" },
