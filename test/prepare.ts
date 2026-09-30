@@ -30,9 +30,6 @@ const PORT = BETELGEUZ_TEST_PORT ?? "22";
 const USER = BETELGEUZ_TEST_USER ?? "root";
 const CREDENTIAL = BETELGEUZ_TEST_CREDENTIAL_REF ?? "e2e-board";
 const REMOTE_PATH = BETELGEUZ_TEST_REMOTE_PATH ?? "/tmp/betelgeuz-e2e/app";
-/** Space-separated argv for the deployed application; the fixture frame a
- * vision target expects is created by the suite. */
-const ARGS = (process.env.BETELGEUZ_TEST_ARGS ?? "").split(/\s+/).filter(Boolean);
 
 
 async function main(): Promise<void> {
@@ -61,7 +58,7 @@ async function main(): Promise<void> {
         "betelgeuz.deploy.artifactPath": "artifact",
         "betelgeuz.deploy.remotePath": REMOTE_PATH,
         "betelgeuz.deploy.fileMode": "0755",
-        "betelgeuz.deploy.args": ARGS,
+        "betelgeuz.deploy.args": [],
         "betelgeuz.target.credentialRef": CREDENTIAL,
         "betelgeuz.target.host": BETELGEUZ_TEST_HOST,
         "betelgeuz.target.port": Number(PORT),
@@ -75,9 +72,7 @@ async function main(): Promise<void> {
   await rm(artifact, { force: true });
   await copyFile(BETELGEUZ_TEST_ARTIFACT as string, artifact);
   const info = await stat(artifact);
-  console.log(
-    `e2e: artifact ${info.size} bytes; board ${BETELGEUZ_TEST_HOST}; args ${JSON.stringify(ARGS)}`
-  );
+  console.log(`e2e: artifact ${info.size} bytes; board ${BETELGEUZ_TEST_HOST}`);
   process.env.BETELGEUZ_TEST_EXPECT_SIZE = String(info.size);
 }
 

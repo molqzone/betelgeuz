@@ -26,9 +26,6 @@ const PORT = Number(process.env.BETELGEUZ_TEST_PORT ?? "22");
 const USER = process.env.BETELGEUZ_TEST_USER ?? "root";
 const PASSWORD = process.env.BETELGEUZ_TEST_PASSWORD ?? "";
 const REMOTE_APP = "/tmp/betelgeuz-e2e/app";
-const REMOTE_FRAME = "/tmp/betelgeuz-e2e/frame.nv21";
-/** A 640x480 packed NV21 frame: 307200 Y bytes plus 153600 interleaved VU. */
-const FRAME_BYTES = 640 * 480 * 3 * 2;
 
 const shown: Array<{ level: string; text: string }> = [];
 
@@ -56,10 +53,7 @@ function stubDialogs(): void {
 }
 
 /** A second session, so the board's own state is the assertion. */
-async function onBoard(command: Array<string>, redirect?: string): Promise<string> {
-  const line = redirect === undefined
-    ? command
-    : ["/usr/bin/sh", "-c", `${command.join(" ")} > ${redirect}`];
+async function onBoard(command: Array<string>): Promise<string> {
   const prober = new SshClient();
   const pin = (
     await prober.inspectHostKey({ host: HOST, port: PORT, username: USER }, undefined)
@@ -75,8 +69,8 @@ async function onBoard(command: Array<string>, redirect?: string): Promise<strin
     });
     const handle = await client.exec(
       ExecRequest.launch({
-        executable: line[0],
-        argv: line.slice(1),
+        executable: command[0],
+        argv: command.slice(1),
         environment: {},
         allocatePty: false,
       })
@@ -151,7 +145,6 @@ suite("betelgeuz surface commands", () => {
   setup(async () => {
     stubDialogs();
     await onBoard(["/usr/bin/rm", "-f", REMOTE_APP]);
-    await onBoard(["/usr/bin/head", "-c", String(FRAME_BYTES), "/dev/zero"], REMOTE_FRAME);
   });
 
   test("the fixture workspace's settings parse", () => {
@@ -190,6 +183,5 @@ suite("betelgeuz surface commands", () => {
 
     assert.deepEqual(messagesAt("error"), [], JSON.stringify(shown, null, 2));
     assert.equal(await onBoard(["/usr/bin/pgrep", "-af", "betelgeuz-e2e"]), "");
-    await onBoard(["/usr/bin/rm", "-f", REMOTE_FRAME]);
   });
 });
