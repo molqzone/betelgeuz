@@ -339,16 +339,21 @@ The initial catalog:
 | `ssh.hostkey-mismatch` | identity | presented host key does not match the pin | compare fingerprints and review the pin | no |
 | `ssh.lost` | connect | connection dropped during an operation | automatic reconnect, then retry | yes |
 | `identity.descriptor-mismatch` | identity | descriptor does not match the pinned identity | review pins or choose another board | no |
+| `identity.descriptor-timeout` | identity | reading the descriptor from the target timed out | retry | yes |
+| `identity.descriptor-unreadable` | identity | the target returned a descriptor that could not be read | inspect the log for the parse detail | no |
 | `identity.instance-changed` | identity | strategy instance identity changed since binding | re-run `Select SSH Target` | no |
 | `strategy.unsupported-target` | validate | selected strategy cannot find a required target interface | select a strategy supported by the target | no |
 | `artifact.missing` | artifact | no existing artifact for the selected CMake target | build with CMake Tools (never implicitly) | no |
 | `artifact.arch-mismatch` | artifact | host-side format/architecture validation failed | check toolchain and core selection | no |
 | `artifact.runtime-incompatible` | artifact | ELF ABI, dynamic loader, or target runtime is incompatible | check the target sysroot/libc and rebuild for the target | no |
+| `artifact.runtime-probe-failed` | artifact | reading the target runtime information for deployment failed | retry | yes |
 | `artifact.ambiguous` | artifact | target produces multiple artifacts; the single-artifact rule applies in the MVP | deploy a single-artifact target (selection arrives in a later phase) | no |
 | `deploy.busy` | deploy / lifecycle | another mutating operation is running | retry after it finishes | yes |
 | `deploy.cancelled` | deploy | cancelled before the commit point; target unchanged | informational | no |
+| `operation.cancelled` | any | a user-cancelled operation stopped before completion | informational | no |
 | `deploy.upload-failed` | deploy | staging upload failed; nothing activated | retry | yes |
 | `deploy.commit-failed` | deploy | activation failed; carries target state | `Restore` the previous version or retry | depends on state |
+| `deploy.activation-unsupported` | deploy | the target's SFTP server cannot replace a file atomically | use a target SFTP server that supports `posix-rename` | no |
 | `deploy.preflight-failed` | deploy | destination is read-only, `noexec`, out of space, or cannot apply requested permissions | fix target storage, mount, or permissions | no |
 | `privilege.denied` | deploy / lifecycle | templated command needs root or sudo | check account privilege mode and sudo whitelist | no |
 | `rproc.instance-missing` | lifecycle | no standard `remoteproc` interface for the core | re-classify the workspace as big-core or choose another board | no |

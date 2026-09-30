@@ -45,6 +45,7 @@ export type RemediationId =
   | "none"
   | "restorePreviousVersion"
   | "checkPrivileges"
+  | "upgradeTargetSftpServer"
   | "installGdbserver"
   | "inspectTrace"
   | "showLog";
@@ -120,6 +121,18 @@ export const COMMON_ERRORS = {
     remediation: "checkIdentityPins",
     summary: "The hardware descriptor does not match the pinned board identity.",
   },
+  "identity.descriptor-timeout": {
+    phase: "identity",
+    retriable: true,
+    remediation: "retry",
+    summary: "Reading the hardware descriptor from the target timed out.",
+  },
+  "identity.descriptor-unreadable": {
+    phase: "identity",
+    retriable: false,
+    remediation: "showLog",
+    summary: "The target returned a hardware descriptor that could not be read.",
+  },
   "identity.instance-changed": {
     phase: "identity",
     retriable: false,
@@ -138,6 +151,18 @@ export const COMMON_ERRORS = {
     retriable: false,
     remediation: "checkArtifactToolchain",
     summary: "Host-side artifact validation failed (format or architecture).",
+  },
+  "artifact.runtime-incompatible": {
+    phase: "artifact",
+    retriable: false,
+    remediation: "checkArtifactToolchain",
+    summary: "The artifact's ELF runtime requirements do not match the target.",
+  },
+  "artifact.runtime-probe-failed": {
+    phase: "artifact",
+    retriable: true,
+    remediation: "retry",
+    summary: "Reading the target runtime information for deployment failed.",
   },
   "artifact.ambiguous": {
     phase: "artifact",
@@ -166,6 +191,12 @@ export const COMMON_ERRORS = {
     summary:
       "The operation was cancelled before its commit point; the target is unchanged.",
   },
+  "operation.cancelled": {
+    phase: "any",
+    retriable: false,
+    remediation: "none",
+    summary: "The operation was cancelled before it completed.",
+  },
   "deploy.upload-failed": {
     phase: "deploy",
     retriable: true,
@@ -179,6 +210,20 @@ export const COMMON_ERRORS = {
     summary:
       "Activating the staged artifact failed; carries the target state at the abort point.",
   },
+  "deploy.activation-unsupported": {
+    phase: "deploy",
+    retriable: false,
+    remediation: "upgradeTargetSftpServer",
+    summary:
+      "The target's SFTP server cannot replace an existing file atomically, so activation is refused.",
+  },
+  "deploy.preflight-failed": {
+    phase: "deploy",
+    retriable: false,
+    remediation: "checkPrivileges",
+    summary:
+      "The target destination failed deployment preflight (storage, mount, or permissions).",
+  },
   "privilege.denied": {
     phase: "deploy",
     retriable: false,
@@ -191,6 +236,18 @@ export const COMMON_ERRORS = {
     retriable: false,
     remediation: "installGdbserver",
     summary: "gdbserver is not available on the target for the debug session.",
+  },
+  "runtime.service-manager-missing": {
+    phase: "lifecycle",
+    retriable: false,
+    remediation: "selectSupportedStrategy",
+    summary: "The configured service mode has no supported service manager or unit.",
+  },
+  "runtime.orphan-risk": {
+    phase: "lifecycle",
+    retriable: false,
+    remediation: "selectSupportedStrategy",
+    summary: "The foreground process cannot be proven safe to clean up after disconnect.",
   },
   "internal.unexpected": {
     phase: "any",
