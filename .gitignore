@@ -6,3 +6,4 @@ out/
 target/
 schemas/
 .claude/settings.local.json
+.omo/
