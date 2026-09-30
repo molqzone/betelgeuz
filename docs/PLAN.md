@@ -278,10 +278,15 @@ Passwords, private keys, and private-key passphrases must not be stored in ordin
 Betelgeuz does not invoke CMake configure or build commands, register a replacement Build command, parse CMake build failures, or mirror CMake Tools output. CMake Tools remains responsible for all build actions and build diagnostics. Betelgeuz does not check artifact freshness against sources either: Deploy consumes whatever the selected target's last build produced, and freshness is the build owner's concern. Artifact selection in the MVP follows an exactly-one rule: a target with one artifact deploys it directly, and a target that produces several, such as an ELF plus an `objcopy` binary, fails with `artifact.ambiguous` and lists the candidates rather than guessing. Multi-artifact selection through a `betelgeuz.deploy.artifact` suffix/pattern key arrives in a later phase. Deploying multiple files together is deferred.
 
 For Linux userspace artifacts, host-side checks cover ELF class, machine, endianness, ABI and
-interpreter metadata; the target probe supplies the runtime compatibility facts. Deployment also
-checks destination writability, executable permission, filesystem space, and same-filesystem
-staging before it reaches the commit point. A failed preflight leaves the active artifact and
-running process untouched.
+interpreter metadata; the target probe supplies the runtime compatibility facts. Deployment
+creates the destination directory when the workspace's `remotePath` names one that does not
+exist yet, then checks destination writability, executable permission, filesystem space, and
+same-filesystem staging before it reaches the commit point. Activation replaces the destination
+atomically (`posix-rename`); a target whose SFTP server cannot do that is refused with
+`deploy.activation-unsupported` rather than risking the deployed artifact through a non-atomic
+replacement. A failed preflight leaves the active
+artifact and running process untouched; an uncreatable destination directory reports
+`deploy.preflight-failed` before anything is staged.
 
 ### Attach and deploy
 
@@ -395,7 +400,7 @@ This section is the application strategy's specification, standing as a peer of 
 
 No VS Code Server is needed to run a target process. The core opens SSH exec channels for commands and keeps a channel open only when it is streaming a foreground process.
 
-- **Foreground mode** streams stdout and stderr to the Betelgeuz OutputChannel and reports the exit code or terminating signal. The start command is a fixed template that places the program in its own session and process group and reports its PID as the runtime handle — the process-ownership that a terminal owner gets for free, made explicit for SSH exec. `Stop` sends `SIGTERM` to that process group, waits a configurable grace period (five seconds by default), then escalates to `SIGKILL`; broad process-name matching is never used. A lost SSH channel triggers reconciliation and the configured disconnect policy; the core does not assume that the process received `SIGHUP` or already exited. If the target cannot prove cleanup, it reports `runtime.orphan-risk` and requires service mode or explicit cleanup. Exit reporting distinguishes a normal exit code, a crash signal, and a user-requested stop.
+- **Foreground mode** streams stdout and stderr to the Betelgeuz OutputChannel and reports the exit code or terminating signal. The start command is a fixed template that `exec`s the program directly, so it stays the command of the exec channel: the server has already put that command in its own session and process group, its exit status is the run's outcome, and the run ends when the channel closes. Launches never detach (`setsid`, `nohup`, backgrounding) — a detached program becomes a grandchild the channel can neither report nor signal. `Stop` signals that group — `SIGTERM`, a configurable grace period (five seconds by default), then `SIGKILL` — and the reported outcome names the terminating signal; broad process-name matching is never used. A lost SSH channel triggers reconciliation and the configured disconnect policy; the core does not assume that the process received `SIGHUP` or already exited. If the target cannot prove cleanup, it reports `runtime.orphan-risk` and requires service mode or explicit cleanup. Exit reporting distinguishes a normal exit code, a crash signal, and a user-requested stop.
 - **Service mode** starts, stops, restarts, and inspects the application through a target service manager. Logs come from the service manager or a configured log source. Service mode is a conditional capability requiring a supported service manager on the target image, systemd in the first implementation; images without one, such as busybox-based builds, use foreground mode.
 - **Fetch recent output** follows the VS Code scrollback model: output history lives host-side, in the core's per-session ring buffer (the last lines of the current and previous foreground session, lost on core restart), while in service mode it tails the service manager's log source. Persistent remote log files and journal integration remain a Phase 7 (Optimization) item.
 - After an SSH disconnect, the strategy reconnects and queries process or service state before updating the UI. It must not infer that a process stopped merely because its SSH channel closed.
@@ -491,11 +496,19 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Implement the `linux.ssh-app` strategy for deploy, foreground run with streamed output/exit status, stop, restart, status inspection, and configured logs.
 - Implement structured foreground launch (`executable`, `args`, `cwd`, and environment), target
   runtime compatibility checks, permission/mode handling, and bounded host-side output buffering.
-- Add status bar and OutputChannel reporting.
+- Extend the status bar and OutputChannel with strategy operations and streamed target output.
 - Offer the implemented `linux.ssh-app` strategy for the first attach flow. Attach creation verifies
   board identity only; the strategy validates its own runtime interfaces before its operations.
 
 First working slice acceptance: from the VS Code adapter, `Connect` → host-key verification → descriptor read → SFTP upload to a scratch path → structured exec → streamed stdout → `Stop`, against the Tier 1 board. The slice consumes a manually supplied artifact record; CMake handoff (Phase 2), reconciliation depth (Phase 3), service mode (Phase 4), `linux.remoteproc` (Phase 5), and debug (Phase 6) are explicitly out of scope.
+
+Implementation status: the current Phase 1 slice provides the manual artifact path, same-session
+SFTP staging and atomic rename, configured mode application, structured foreground launch, bounded
+host-side output history, streamed output, exit status, stop escalation, restart, status, and logs
+commands. The current deploy path performs bounded ELF machine/class/endianness/interpreter
+checks and a fixed target preflight for writable, free-space, and `noexec` state before staging;
+reconnect reconciliation and systemd service mode remain outstanding within the later Phase 3/4
+acceptance gates.
 
 ### Phase 2: CMake artifact integration
 

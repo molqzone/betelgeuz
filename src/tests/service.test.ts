@@ -1,8 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CoreService } from "../service";
 import { FakeSshTransport } from "../transport/fake";
-import { HostKeyFingerprint } from "../transport";
+import {
+  ExecHandle,
+  HostKeyFingerprint,
+  type Authentication,
+  type ExecRequest,
+  type SshConnectOptions,
+} from "../transport";
 import type { AttachRequest, ProfileCatalog } from "../protocol";
 
 const PIN = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -30,13 +36,139 @@ const PROFILE_PARAMS = {
 
 describe("CoreService", () => {
   it("attaches through the transport without echoing secrets", async () => {
-    const service = new CoreService(new FakeSshTransport());
+    const transport = new FakeSshTransport();
+    transport.setDescriptor({ deviceId: "board-1", socId: "rk3506", model: "RVNano" });
+    const service = new CoreService(transport);
     const result = await service.attach(request());
     expect(result.state).toBe("attached");
     expect(result.attachId).toBe("attach-1");
     expect(result.profile.hostKeyPinned).toBe(true);
     expect(result.identity.hostKeyFingerprint).toBe(PIN);
+    expect(result.identity.descriptor).toEqual({
+      deviceId: "board-1",
+      socId: "rk3506",
+      model: "RVNano",
+    });
     expect(JSON.stringify(result)).not.toContain("one-use-secret");
+  });
+
+  it("supports a one-use private-key credential and wipes it after connection", async () => {
+    class CapturingTransport extends FakeSshTransport {
+      authentication?: Authentication;
+
+      override async connect(options: SshConnectOptions): Promise<void> {
+        this.authentication = options.authentication;
+        await super.connect(options);
+      }
+    }
+
+    const transport = new CapturingTransport();
+    const service = new CoreService(transport);
+    await service.attach(
+      request({
+        credentialSecrets: {
+          board: { privateKey: "private-key-material", passphrase: "key-passphrase" },
+        },
+      })
+    );
+    expect(transport.authentication?.kind).toBe("privateKey");
+    if (transport.authentication?.kind === "privateKey") {
+      expect(transport.authentication.privateKey.expose()).toBe("");
+      expect(transport.authentication.passphrase?.expose()).toBe("");
+    }
+  });
+
+  it("rejects a descriptor that disagrees with a configured identity pin", async () => {
+    const transport = new FakeSshTransport();
+    transport.setDescriptor({ deviceId: "other-board" });
+    const service = new CoreService(transport);
+    await expect(
+      service.attach(
+        request({
+          target: {
+            host: "board.local",
+            username: "root",
+            credentialRef: "board",
+            hostKey: PIN,
+            deviceId: "expected-board",
+          },
+        })
+      )
+    ).rejects.toMatchObject({ code: "identity.descriptor-mismatch" });
+    await expect(service.disconnect({ attachId: "attach-1" })).resolves.toEqual({
+      state: "disconnected",
+    });
+  });
+
+  it("closes the SSH session when descriptor reading times out", async () => {
+    class StalledTransport extends FakeSshTransport {
+      closed = false;
+      terminationRequested = false;
+
+      override async exec(_request: ExecRequest): Promise<ExecHandle> {
+        return new ExecHandle(() => {
+          this.terminationRequested = true;
+          return new Promise<void>(() => undefined);
+        });
+      }
+
+      override async close(): Promise<void> {
+        this.closed = true;
+        await super.close();
+      }
+    }
+
+    vi.useFakeTimers();
+    const transport = new StalledTransport();
+    try {
+      const attach = new CoreService(transport).attach(request());
+      const rejection = expect(attach).rejects.toMatchObject({
+        code: "identity.descriptor-timeout",
+      });
+      await vi.advanceTimersByTimeAsync(10_001);
+      await vi.advanceTimersByTimeAsync(251);
+      await rejection;
+      expect(transport.terminationRequested).toBe(true);
+      expect(transport.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the SSH session when the descriptor probe is cancelled", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    class StalledTransport extends FakeSshTransport {
+      closed = false;
+      terminationRequested = false;
+
+      override async exec(_request: ExecRequest): Promise<ExecHandle> {
+        markStarted?.();
+        return new ExecHandle(() => {
+          this.terminationRequested = true;
+        });
+      }
+
+      override async close(): Promise<void> {
+        this.closed = true;
+        await super.close();
+      }
+    }
+
+    const transport = new StalledTransport();
+    const controller = new AbortController();
+    const attach = new CoreService(transport).attach(request(), controller.signal);
+    await started;
+    await Promise.resolve();
+    controller.abort("user cancelled");
+    await expect(attach).rejects.toMatchObject({
+      code: "operation.cancelled",
+      phase: "identity",
+    });
+    expect(transport.terminationRequested).toBe(true);
+    expect(transport.closed).toBe(true);
   });
 
   it("requires host-key enrollment before attach", async () => {
@@ -84,6 +216,20 @@ describe("CoreService", () => {
     // Idempotent when nothing is attached.
     expect(await service.disconnect({ attachId: "anything" })).toEqual({
       state: "disconnected",
+    });
+  });
+
+  it("abandons an attach whose session was lost so the next attach can bind", async () => {
+    const transport = new FakeSshTransport();
+    transport.setDescriptor({ deviceId: "board-1" });
+    const service = new CoreService(transport);
+    await service.attach(request());
+    transport.dropConnection("ssh.lost", "cable pulled");
+
+    expect(await service.abandonAttach()).toEqual({ state: "disconnected" });
+    expect(await service.attach(request())).toMatchObject({
+      attachId: "attach-2",
+      state: "attached",
     });
   });
 
