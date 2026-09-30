@@ -15,6 +15,7 @@ export type SensitiveString = string;
 export type CredentialMaterial = {
   passphrase?: SensitiveString | null;
   password?: SensitiveString | null;
+  privateKey?: SensitiveString | null;
 };
 
 /** One-use credential material indexed by the profile credential reference. */
@@ -94,6 +95,9 @@ export const DEPLOY_LOCAL_TARGET_KEY = "betelgeuz.deploy.localTarget";
 /** Optional suffix or pattern for selecting one artifact in a later phase. */
 export const DEPLOY_ARTIFACT_KEY = "betelgeuz.deploy.artifact";
 
+/** Phase 1 manual artifact path; CMake Tools owns this handoff later. */
+export const DEPLOY_ARTIFACT_PATH_KEY = "betelgeuz.deploy.artifactPath";
+
 /** Remote destination for the selected artifact. */
 export const DEPLOY_REMOTE_PATH_KEY = "betelgeuz.deploy.remotePath";
 
@@ -127,6 +131,7 @@ export const FIXED_CONFIG_KEYS = [
   `${TARGET_INLINE_PREFIX}proxyChain`,
   ATTACH_STRATEGY_KEY,
   DEPLOY_LOCAL_TARGET_KEY,
+  DEPLOY_ARTIFACT_PATH_KEY,
   DEPLOY_ARTIFACT_KEY,
   DEPLOY_REMOTE_PATH_KEY,
   DEPLOY_EXECUTABLE_KEY,

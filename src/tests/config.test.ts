@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -11,6 +13,7 @@ import {
   CONFIG_KEY_PATTERNS,
   DEPLOY_ARGS_KEY,
   DEPLOY_ARTIFACT_KEY,
+  DEPLOY_ARTIFACT_PATH_KEY,
   DEPLOY_CWD_KEY,
   DEPLOY_ENVIRONMENT_KEY,
   DEPLOY_EXECUTABLE_KEY,
@@ -45,6 +48,7 @@ describe("settings shapes", () => {
         "betelgeuz.target.proxyChain",
         "betelgeuz.attach.strategy",
         "betelgeuz.deploy.localTarget",
+        "betelgeuz.deploy.artifactPath",
         "betelgeuz.deploy.artifact",
         "betelgeuz.deploy.remotePath",
         "betelgeuz.deploy.executable",
@@ -58,6 +62,33 @@ describe("settings shapes", () => {
       ]
     `);
     expect(CONFIG_KEY_PATTERNS).toEqual(["betelgeuz.target.", "betelgeuz.attach."]);
+  });
+
+  it("contributes every fixed setting and the implemented target commands", () => {
+    const manifest = JSON.parse(
+      readFileSync("package.json", "utf8")
+    ) as {
+      contributes: {
+        commands: Array<{ command: string }>;
+        configuration: { properties: Record<string, unknown> };
+      };
+    };
+    const properties = manifest.contributes.configuration.properties;
+    for (const key of FIXED_CONFIG_KEYS) {
+      expect(properties).toHaveProperty(key);
+    }
+    expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([
+      "betelgeuz.selectSshTarget",
+      "betelgeuz.connect",
+      "betelgeuz.disconnect",
+      "betelgeuz.inspectAttach",
+      "betelgeuz.deploy",
+      "betelgeuz.start",
+      "betelgeuz.stop",
+      "betelgeuz.restart",
+      "betelgeuz.status",
+      "betelgeuz.logs",
+    ]);
   });
 
   it("builds strategy keys from the full strategy ID", () => {
@@ -74,6 +105,7 @@ describe("settings shapes", () => {
     expect(TARGET_INLINE_PREFIX).toBe("betelgeuz.target.");
     expect([
       DEPLOY_LOCAL_TARGET_KEY,
+      DEPLOY_ARTIFACT_PATH_KEY,
       DEPLOY_ARTIFACT_KEY,
       DEPLOY_REMOTE_PATH_KEY,
       DEPLOY_EXECUTABLE_KEY,
@@ -86,6 +118,7 @@ describe("settings shapes", () => {
       DEPLOY_SERVICE_UNIT_KEY,
     ]).toEqual([
       "betelgeuz.deploy.localTarget",
+      "betelgeuz.deploy.artifactPath",
       "betelgeuz.deploy.artifact",
       "betelgeuz.deploy.remotePath",
       "betelgeuz.deploy.executable",

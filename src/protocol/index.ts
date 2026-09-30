@@ -21,6 +21,7 @@ export {
   CONFIG_KEY_PATTERNS,
   DEPLOY_ARGS_KEY,
   DEPLOY_ARTIFACT_KEY,
+  DEPLOY_ARTIFACT_PATH_KEY,
   DEPLOY_CWD_KEY,
   DEPLOY_ENVIRONMENT_KEY,
   DEPLOY_EXECUTABLE_KEY,
@@ -66,6 +67,19 @@ export type ArtifactRecord = {
   size: number;
   symbolsPath?: string | null;
   targetName: string;
+};
+
+/** Phase 1 userspace application strategy settings. */
+export type ApplicationConfiguration = {
+  args?: Array<string>;
+  cwd?: string;
+  environment?: Record<string, string>;
+  executable?: string;
+  fileMode?: string | number;
+  remotePath: string;
+  runMode?: "foreground" | "service";
+  serviceUnit?: string;
+  stopGraceMs?: number;
 };
 
 /** Fully resolved, validated connection settings. */
@@ -140,6 +154,34 @@ export type ArtifactHandoffParams = {
 
 export type ArtifactHandoffResult = {
   accepted: boolean;
+};
+
+export type DeployRequest = {
+  artifact: ArtifactRecord;
+  attachId: string;
+  configuration: ApplicationConfiguration;
+};
+
+export type DeployResult = {
+  operationId: string;
+  remotePath: string;
+  previousSize?: number;
+};
+
+export type StartRequest = {
+  attachId: string;
+  configuration: ApplicationConfiguration;
+};
+
+export type StopRequest = {
+  attachId: string;
+  graceMs?: number;
+};
+
+export type RestartRequest = StartRequest;
+
+export type StatusRequest = {
+  attachId: string;
 };
 
 export type OperationResult = {
