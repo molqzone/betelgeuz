@@ -63,11 +63,28 @@ describe("ExecRequest", () => {
 
   it("encodes fixed templates from typed values only", () => {
     const request = ExecRequest.fixed({
-      kind: "signalProcessGroup",
-      pgid: 4242,
-      signal: "term",
+      kind: "preflightDestination",
+      directory: "/opt/app; rm -rf /",
     });
-    expect(request.command).toBe("kill -TERM -- -4242");
+    expect(request.command).toContain("test -d '/opt/app; rm -rf /'");
+    expect(request.command).toContain("df -Pk '/opt/app; rm -rf /'");
+    expect(request.allocatePty).toBe(false);
+    expect(
+      codeOf(() =>
+        ExecRequest.fixed({ kind: "preflightDestination", directory: "bad\0" })
+      )
+    ).toBe("config.invalid");
+  });
+
+  it("creates a destination directory without interpolating it", () => {
+    const request = ExecRequest.fixed({
+      kind: "makeDirectory",
+      directory: "/opt/app; rm -rf /",
+    });
+    expect(request.command).toBe("mkdir -p -- '/opt/app; rm -rf /'");
+    expect(
+      codeOf(() => ExecRequest.fixed({ kind: "makeDirectory", directory: "bad\0" }))
+    ).toBe("config.invalid");
   });
 });
 

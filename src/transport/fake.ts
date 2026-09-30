@@ -10,6 +10,8 @@
 import type { Readable } from "node:stream";
 
 import { BetelgeuzError, type ErrorCode } from "../errors";
+import { throwIfAborted } from "../cancellation";
+import type { HardwareDescriptor } from "../protocol/descriptor";
 import {
   ExecEvent,
   ExecHandle,
@@ -31,6 +33,7 @@ export class FakeSshTransport implements SshTransport {
   private commandEvents = new Map<string, Array<ExecEvent>>();
   private files = new Map<string, Buffer>();
   private lossListeners = new Set<(loss: SessionLoss) => void>();
+  private descriptor: HardwareDescriptor = {};
 
   setHostKey(hostKey: HostKeyFingerprint): void {
     this.hostKey = hostKey;
@@ -42,6 +45,10 @@ export class FakeSshTransport implements SshTransport {
 
   setExecEvents(command: string, events: Array<ExecEvent>): void {
     this.commandEvents.set(command, events);
+  }
+
+  setDescriptor(descriptor: HardwareDescriptor): void {
+    this.descriptor = descriptor;
   }
 
   remoteFile(path: string): Buffer | undefined {
@@ -58,11 +65,16 @@ export class FakeSshTransport implements SshTransport {
     }
   }
 
-  async inspectHostKey(_endpoint: SshEndpoint): Promise<HostKeyFingerprint> {
+  async inspectHostKey(
+    _endpoint: SshEndpoint,
+    signal?: AbortSignal
+  ): Promise<HostKeyFingerprint> {
+    throwIfAborted(signal, "identity");
     return this.hostKey;
   }
 
-  async connect(options: SshConnectOptions): Promise<void> {
+  async connect(options: SshConnectOptions, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal, "connect");
     if (this.connectFailure) {
       throw new BetelgeuzError("ssh.unreachable");
     }
@@ -82,18 +94,69 @@ export class FakeSshTransport implements SshTransport {
     const handle = new ExecHandle(() => {
       handle.push({ kind: "exit", signal: "TERM" });
       handle.push(null);
+    }, () => {
+      handle.push({ kind: "exit", signal: "KILL" });
+      handle.push(null);
     });
-    for (const event of this.commandEvents.get(request.command) ?? []) {
-      handle.push(event);
+    const events = this.commandEvents.get(request.command);
+    if (events === undefined && request.command.startsWith("mkdir -p -- ")) {
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
+    if (
+      events === undefined &&
+      request.command.startsWith("if test -r /etc/betelgeuz/device.json")
+    ) {
+      handle.push({
+        kind: "output",
+        stream: "stdout",
+        bytes: Buffer.from(JSON.stringify(this.descriptor)),
+      });
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
+    if (events === undefined && request.command.startsWith("printf 'machine\\t'")) {
+      handle.push({
+        kind: "output",
+        stream: "stdout",
+        bytes: Buffer.from(
+          "machine\taarch64\nelfClass\t64\nendianness\tlittle\ninterpreter\t/lib/ld-musl-aarch64.so.1\n"
+        ),
+      });
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
+    if (events === undefined && request.command.startsWith("printf 'writable\\t'")) {
+      handle.push({
+        kind: "output",
+        stream: "stdout",
+        bytes: Buffer.from("writable\tyes\nfreeBytes\t104857600\nnoexec\tno\n"),
+      });
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
+    if (events !== undefined) {
+      for (const event of events) {
+        handle.push(event);
+      }
+      handle.push(null);
+    }
+    if (request.command.startsWith("if test -r /etc/betelgeuz/device.json")) {
+      handle.push(null);
     }
     return handle;
   }
 
-  async upload(source: Readable, remotePath: string): Promise<void> {
+  async upload(source: Readable, remotePath: string, signal?: AbortSignal): Promise<void> {
     this.ensureConnected();
     const chunks: Array<Buffer> = [];
     try {
       for await (const chunk of source) {
+        throwIfAborted(signal, "deploy");
         chunks.push(Buffer.from(chunk as string | Buffer));
       }
     } catch (error) {
@@ -112,11 +175,30 @@ export class FakeSshTransport implements SshTransport {
     }
     this.files.delete(from);
     this.files.set(to, contents);
+    const mode = this.modes.get(from);
+    this.modes.delete(from);
+    if (mode !== undefined) {
+      this.modes.set(to, mode);
+    }
   }
 
   async remove(path: string): Promise<void> {
     this.ensureConnected();
     this.files.delete(path);
+    this.modes.delete(path);
+  }
+
+  async chmod(path: string, mode: number): Promise<void> {
+    this.ensureConnected();
+    const contents = this.files.get(path);
+    if (contents === undefined) {
+      throw new BetelgeuzError("deploy.commit-failed", {
+        detail: `remote file \`${path}\` does not exist`,
+      });
+    }
+    // The fake stores file bytes separately from metadata; retain mode for
+    // the next metadata query without changing the upload representation.
+    this.modes.set(path, mode);
   }
 
   async metadata(path: string): Promise<RemoteFileInfo | null> {
@@ -125,7 +207,7 @@ export class FakeSshTransport implements SshTransport {
     if (contents === undefined) {
       return null;
     }
-    return { size: contents.length, mode: 0o644, isFile: true };
+    return { size: contents.length, mode: this.modes.get(path) ?? 0o644, isFile: true };
   }
 
   async close(): Promise<void> {
@@ -137,4 +219,6 @@ export class FakeSshTransport implements SshTransport {
       throw new BetelgeuzError("ssh.lost");
     }
   }
+
+  private modes = new Map<string, number>();
 }

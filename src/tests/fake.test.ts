@@ -56,12 +56,12 @@ describe("FakeSshTransport", () => {
   it("reports the terminating signal and closes the stream", async () => {
     const transport = new FakeSshTransport();
     await transport.connect(connectOptions());
-    const request = ExecRequest.fixed({
-      kind: "signalProcessGroup",
-      pgid: 4242,
-      signal: "kill",
+    const request = ExecRequest.launch({
+      executable: "fixed-launcher",
+      argv: [],
+      environment: {},
+      allocatePty: false,
     });
-    expect(request.command).toBe("kill -KILL -- -4242");
     transport.setExecEvents(request.command, []);
     const handle = await transport.exec(request);
     await handle.terminate();

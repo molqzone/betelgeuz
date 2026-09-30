@@ -13,6 +13,7 @@ import type { Readable } from "node:stream";
 
 import { Client, type ClientChannel, type SFTPWrapper } from "ssh2";
 
+import { cancellationError, throwIfAborted } from "../cancellation";
 import { BetelgeuzError } from "../errors";
 import type { ErrorCode } from "../errors";
 import {
@@ -26,6 +27,8 @@ import {
   type SshTransport,
 } from "./index";
 
+const SSH_CONNECTION_TIMEOUT_MS = 20_000;
+
 export class SshClient implements SshTransport {
   private client?: Client;
   private sftp?: SFTPWrapper;
@@ -33,24 +36,55 @@ export class SshClient implements SshTransport {
   private intentionalClose = false;
   private lossListeners = new Set<(loss: SessionLoss) => void>();
 
-  async inspectHostKey(endpoint: SshEndpoint): Promise<HostKeyFingerprint> {
+  async inspectHostKey(
+    endpoint: SshEndpoint,
+    signal?: AbortSignal
+  ): Promise<HostKeyFingerprint> {
+    throwIfAborted(signal, "identity");
     let observed: HostKeyFingerprint | undefined;
     const client = new Client();
     // The probe never accepts the session; the fingerprint is recorded before
     // the handshake is rejected.
-    await new Promise<void>((resolve, reject) => {
+    const probe = new Promise<void>((resolve, reject) => {
       client
         .on("error", (error) => reject(error))
         .connect({
           host: endpoint.host,
           port: endpoint.port,
           username: endpoint.username,
+          readyTimeout: SSH_CONNECTION_TIMEOUT_MS,
           hostVerifier: (key: Buffer) => {
             observed = fingerprintOf(key);
             return false;
           },
         });
-    }).catch(() => undefined);
+    });
+    let abortListener: (() => void) | undefined;
+    try {
+      const probeResult = probe.catch(() => undefined);
+      if (signal === undefined) {
+        await probeResult;
+      } else {
+        const aborted = new Promise<never>((_resolve, reject) => {
+          abortListener = () => {
+            client.end();
+            reject(cancellationError("identity", signal.reason));
+          };
+          if (signal.aborted) {
+            abortListener();
+          } else {
+            signal.addEventListener("abort", abortListener, { once: true });
+          }
+        });
+        await Promise.race([probeResult, aborted]);
+      }
+    } finally {
+      if (signal !== undefined && abortListener !== undefined) {
+        signal.removeEventListener("abort", abortListener);
+      }
+      client.end();
+    }
+    throwIfAborted(signal, "identity");
     if (observed === undefined) {
       throw new BetelgeuzError("ssh.handshake-failed", {
         detail: "the server did not present a pinnable host key",
@@ -59,7 +93,8 @@ export class SshClient implements SshTransport {
     return observed;
   }
 
-  async connect(options: SshConnectOptions): Promise<void> {
+  async connect(options: SshConnectOptions, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal, "connect");
     if (options.proxyChain.length > 0) {
       throw new BetelgeuzError("profile.unsupported-proxy", {
         detail: "proxy chains are not yet implemented in the ssh2 transport",
@@ -68,34 +103,72 @@ export class SshClient implements SshTransport {
     const pin = options.hostKeyPin;
     let mismatch = false;
     const client = new Client();
-    client.on("close", () => this.reportLossIfUnintentional(undefined));
-    client.on("error", (error) => this.reportLossIfUnintentional(error));
 
+    let privateKeyBytes: Buffer | undefined;
     const auth =
       options.authentication.kind === "password"
         ? { password: options.authentication.password.expose() }
         : {
-            privateKey: Buffer.from(options.authentication.privateKey.expose()),
+            privateKey: (privateKeyBytes = Buffer.from(
+              options.authentication.privateKey.expose()
+            )),
             passphrase: options.authentication.passphrase?.expose(),
           };
 
-    await new Promise<void>((resolve, reject) => {
-      client
-        .on("ready", resolve)
-        .on("error", reject)
-        .connect({
-          host: options.endpoint.host,
-          port: options.endpoint.port,
-          username: options.endpoint.username,
-          keepaliveInterval: options.keepaliveSeconds * 1000,
-          hostVerifier: (key: Buffer) => {
-            const matches = fingerprintOf(key).asString() === pin.asString();
-            mismatch = mismatch || !matches;
-            return matches;
-          },
-          ...auth,
-        });
-    }).catch((error: unknown) => {
+    let abortListener: (() => void) | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error): void => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (signal !== undefined && abortListener !== undefined) {
+            signal.removeEventListener("abort", abortListener);
+          }
+          if (error === undefined) {
+            resolve();
+          } else {
+            reject(error);
+          }
+        };
+        const onAbort = (): void => {
+          this.intentionalClose = true;
+          client.end();
+          finish(cancellationError("connect", signal?.reason));
+        };
+        abortListener = onAbort;
+        client.once("ready", () => finish());
+        client.on("error", (error) => finish(error));
+        if (signal !== undefined) {
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) {
+            onAbort();
+          }
+        }
+        if (!settled) {
+          client.connect({
+            host: options.endpoint.host,
+            port: options.endpoint.port,
+            username: options.endpoint.username,
+            keepaliveInterval: options.keepaliveSeconds * 1000,
+            readyTimeout: SSH_CONNECTION_TIMEOUT_MS,
+            hostVerifier: (key: Buffer) => {
+              const matches = fingerprintOf(key).asString() === pin.asString();
+              mismatch = mismatch || !matches;
+              return matches;
+            },
+            ...auth,
+          });
+        }
+      });
+    } catch (error: unknown) {
+      this.intentionalClose = true;
+      client.end();
+      if (error instanceof BetelgeuzError) {
+        throw error;
+      }
       if (mismatch) {
         throw new BetelgeuzError("ssh.hostkey-mismatch", {
           detail: `expected pin ${pin.asString()}`,
@@ -103,11 +176,18 @@ export class SshClient implements SshTransport {
         });
       }
       throw new BetelgeuzError(codeFor(error), { cause: error });
-    });
+    } finally {
+      if (signal !== undefined && abortListener !== undefined) {
+        signal.removeEventListener("abort", abortListener);
+      }
+      privateKeyBytes?.fill(0);
+    }
 
     this.client = client;
     this.connected = true;
     this.intentionalClose = false;
+    client.on("close", () => this.reportLossIfUnintentional(undefined));
+    client.on("error", (error) => this.reportLossIfUnintentional(error));
   }
 
   onSessionLoss(listener: (loss: SessionLoss) => void): () => void {
@@ -125,10 +205,8 @@ export class SshClient implements SshTransport {
       );
     });
     const handle = new ExecHandle(() => {
-      // Polite signal only; escalation is the strategy's job via its
-      // recorded process-group handle.
       channel.signal("TERM");
-    });
+    }, () => channel.signal("KILL"));
     channel.on("data", (chunk: Buffer) => {
       handle.push({ kind: "output", stream: "stdout", bytes: chunk });
     });
@@ -147,11 +225,15 @@ export class SshClient implements SshTransport {
     return handle;
   }
 
-  async upload(source: Readable, remotePath: string): Promise<void> {
+  async upload(source: Readable, remotePath: string, signal?: AbortSignal): Promise<void> {
     const sftp = await this.sftpSession();
     const writer = sftp.createWriteStream(remotePath);
     try {
-      await pipeline(source, writer);
+      if (signal === undefined) {
+        await pipeline(source, writer);
+      } else {
+        await pipeline(source, writer, { signal });
+      }
     } catch (error) {
       throw new BetelgeuzError("deploy.upload-failed", { cause: error });
     }
@@ -159,8 +241,41 @@ export class SshClient implements SshTransport {
 
   async rename(from: string, to: string): Promise<void> {
     const sftp = await this.sftpSession();
+    const unsupported = (cause: unknown): BetelgeuzError =>
+      new BetelgeuzError("deploy.activation-unsupported", {
+        detail:
+          "the target's SFTP server cannot replace an existing destination atomically (posix-rename@openssh.com)",
+        cause,
+      });
+    const posixRename = (sftp as unknown as {
+      ext_openssh_rename?: (
+        from: string,
+        to: string,
+        done: (error: Error | null | undefined) => void
+      ) => void;
+    }).ext_openssh_rename;
+    if (posixRename === undefined) {
+      throw unsupported(undefined);
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        posixRename.call(sftp, from, to, (error) =>
+          error
+            ? reject(new BetelgeuzError("deploy.commit-failed", { cause: error }))
+            : resolve()
+        );
+      });
+    } catch (error) {
+      // The library refuses synchronously when the server does not advertise the
+      // extension; a catalog error means the server accepted and rejected it.
+      throw error instanceof BetelgeuzError ? error : unsupported(error);
+    }
+  }
+
+  async remove(path: string): Promise<void> {
+    const sftp = await this.sftpSession();
     await new Promise<void>((resolve, reject) => {
-      sftp.rename(from, to, (error: Error | null | undefined) =>
+      sftp.unlink(path, (error: Error | null | undefined) =>
         error
           ? reject(new BetelgeuzError("deploy.commit-failed", { cause: error }))
           : resolve()
@@ -168,10 +283,10 @@ export class SshClient implements SshTransport {
     });
   }
 
-  async remove(path: string): Promise<void> {
+  async chmod(path: string, mode: number): Promise<void> {
     const sftp = await this.sftpSession();
     await new Promise<void>((resolve, reject) => {
-      sftp.unlink(path, (error: Error | null | undefined) =>
+      sftp.chmod(path, mode, (error: Error | null | undefined) =>
         error
           ? reject(new BetelgeuzError("deploy.commit-failed", { cause: error }))
           : resolve()
