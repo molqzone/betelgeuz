@@ -482,7 +482,8 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 ### Phase 0.5: Extension bootstrap
 
 - Scaffold the VS Code extension and wire commands, status UI, and the OutputChannel to the core modules.
-- Service calls carry cancellation and structured errors end to end; the catalog-to-presentation mapping lives in the UI layer.
+- The initial surface registers `Select SSH Target`, `Connect`, `Disconnect`, and `Inspect Attach`; it supports per-folder workspace settings, explicit host-key enrollment, SecretStorage credentials, and a persisted last-verified identity.
+- Identity service calls carry cancellation through host-key inspection, SSH connection, and descriptor probing. The UI maps structured catalog errors to notifications and logs causes only in the OutputChannel.
 - Keep the core modules callable from unit tests without VS Code: the fake transport and direct service calls are the harness. No product CLI is planned — see the resolved record.
 
 ### Phase 1: SSH profile MVP

@@ -1,11 +1,10 @@
+/** Extension entry point; activation registers the VS Code surface only. */
 import * as vscode from "vscode";
 
-export function activate(context: vscode.ExtensionContext): void {
-  const disposable = vscode.commands.registerCommand("betelgeuz.helloWorld", () => {
-    void vscode.window.showInformationMessage("Hello from Betelgeuz!");
-  });
+import { ExtensionController } from "./surface/controller";
 
-  context.subscriptions.push(disposable);
+export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(new ExtensionController(context));
 }
 
 export function deactivate(): void {}
