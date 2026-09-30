@@ -7,3 +7,7 @@ target/
 schemas/
 .claude/settings.local.json
 .omo/
+out-test/
+.vscode-test/
+test/fixtures/workspace/artifact
+test/fixtures/workspace/.vscode/settings.json

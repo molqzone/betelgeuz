@@ -75,28 +75,71 @@
           "markdownDescription": "Named SSH profiles shared by workspaces. Store passwords, private keys, and passphrases through Betelgeuz commands so they remain in VS Code SecretStorage.",
           "additionalProperties": {
             "type": "object",
-            "required": ["host", "username", "credentialRef"],
+            "required": [
+              "host",
+              "username",
+              "credentialRef"
+            ],
             "properties": {
-              "host": { "type": "string" },
-              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-              "username": { "type": "string" },
-              "credentialRef": { "type": "string" },
-              "hostKey": { "type": "string" },
-              "deviceId": { "type": "string" },
-              "boardId": { "type": "string" },
-              "socId": { "type": "string" },
-              "keepaliveSeconds": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "username": {
+                "type": "string"
+              },
+              "credentialRef": {
+                "type": "string"
+              },
+              "hostKey": {
+                "type": "string"
+              },
+              "deviceId": {
+                "type": "string"
+              },
+              "boardId": {
+                "type": "string"
+              },
+              "socId": {
+                "type": "string"
+              },
+              "keepaliveSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
               "proxyChain": {
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "required": ["host", "username", "credentialRef", "hostKey"],
+                  "required": [
+                    "host",
+                    "username",
+                    "credentialRef",
+                    "hostKey"
+                  ],
                   "properties": {
-                    "host": { "type": "string" },
-                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                    "username": { "type": "string" },
-                    "credentialRef": { "type": "string" },
-                    "hostKey": { "type": "string" }
+                    "host": {
+                      "type": "string"
+                    },
+                    "port": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "credentialRef": {
+                      "type": "string"
+                    },
+                    "hostKey": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -108,42 +151,127 @@
           "scope": "resource",
           "markdownDescription": "User-level Betelgeuz profile selected for this workspace folder."
         },
-        "betelgeuz.target.host": { "type": "string", "scope": "resource" },
-        "betelgeuz.target.port": { "type": "integer", "minimum": 1, "maximum": 65535, "scope": "resource" },
-        "betelgeuz.target.username": { "type": "string", "scope": "resource" },
-        "betelgeuz.target.credentialRef": { "type": "string", "scope": "resource" },
-        "betelgeuz.target.hostKey": { "type": "string", "scope": "resource" },
-        "betelgeuz.target.deviceId": { "type": "string", "scope": "resource" },
-        "betelgeuz.target.boardId": { "type": "string", "scope": "resource" },
-        "betelgeuz.target.socId": { "type": "string", "scope": "resource" },
-        "betelgeuz.target.keepaliveSeconds": { "type": "integer", "minimum": 1, "maximum": 65535, "scope": "resource" },
-        "betelgeuz.target.proxyChain": { "type": "array", "items": { "type": "object" }, "scope": "resource" },
+        "betelgeuz.target.host": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.target.port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "scope": "resource"
+        },
+        "betelgeuz.target.username": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.target.credentialRef": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.target.hostKey": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.target.deviceId": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.target.boardId": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.target.socId": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.target.keepaliveSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "scope": "resource"
+        },
+        "betelgeuz.target.proxyChain": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "scope": "resource"
+        },
         "betelgeuz.attach.strategy": {
           "type": "string",
           "scope": "resource",
           "markdownDescription": "Deploy strategy selected for this workspace's attach."
         },
-        "betelgeuz.deploy.localTarget": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.artifactPath": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.artifact": { "type": "string", "scope": "resource" },
+        "betelgeuz.deploy.localTarget": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.artifactPath": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.artifact": {
+          "type": "string",
+          "scope": "resource"
+        },
         "betelgeuz.deploy.source": {
           "type": "string",
-          "enum": ["cmake", "manual"],
+          "enum": [
+            "cmake",
+            "manual"
+          ],
           "default": "cmake",
           "scope": "resource",
           "markdownDescription": "Where the deployed artifact comes from: the CMake Tools target this workspace selects, or `betelgeuz.deploy.artifactPath` for a file supplied by hand."
         },
-        "betelgeuz.deploy.remotePath": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.executable": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.args": { "type": "array", "items": { "type": "string" }, "scope": "resource" },
-        "betelgeuz.deploy.cwd": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.environment": { "type": "object", "scope": "resource" },
-        "betelgeuz.deploy.fileMode": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.runCommand": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.runMode": { "type": "string", "scope": "resource" },
-        "betelgeuz.deploy.serviceUnit": { "type": "string", "scope": "resource" },
-        "betelgeuz.attach.linux.remoteproc.instance": { "type": "string", "scope": "resource" },
-        "betelgeuz.attach.linux.remoteproc.firmwarePath": { "type": "string", "scope": "resource" }
+        "betelgeuz.deploy.remotePath": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.executable": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.cwd": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.environment": {
+          "type": "object",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.fileMode": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.runCommand": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.runMode": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.deploy.serviceUnit": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.attach.linux.remoteproc.instance": {
+          "type": "string",
+          "scope": "resource"
+        },
+        "betelgeuz.attach.linux.remoteproc.firmwarePath": {
+          "type": "string",
+          "scope": "resource"
+        }
       }
     }
   },
@@ -154,13 +282,18 @@
     "package": "npm run compile",
     "test": "vitest run",
     "gen:errors": "tsx scripts/gen-errors.ts",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test:e2e": "tsc -p tsconfig.test.json && tsx test/prepare.ts && vscode-test -t 60000"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^22.20.4",
     "@types/ssh2": "^1.15.6",
     "@types/vscode": "^1.95.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
     "eslint": "^10.11.0",
+    "mocha": "^12.0.2",
     "tsx": "^4.23.15",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.70.1",

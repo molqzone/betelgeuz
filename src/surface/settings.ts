@@ -306,7 +306,16 @@ function requiredString(value: unknown, path: string): string {
   return value;
 }
 
+/**
+ * VS Code materializes a key the manifest declares without a default as the
+ * type's empty value — `""`, not `undefined`. `profile.ts` already treats an
+ * editor's empty setting as unset; these readers do the same, so an untouched
+ * setting never reads as a user value.
+ */
 function optionalString(value: unknown, path: string): string | null | undefined {
+  if (typeof value === "string" && value === "") {
+    return undefined;
+  }
   if (value === undefined || value === null || typeof value === "string") {
     return value;
   }
@@ -314,6 +323,11 @@ function optionalString(value: unknown, path: string): string | null | undefined
 }
 
 function optionalNumber(value: unknown, path: string): number | null | undefined {
+  // Every numeric setting here declares `minimum: 1`, so the empty `0` VS Code
+  // materializes means unset rather than a chosen value.
+  if (value === 0) {
+    return undefined;
+  }
   if (value === undefined || value === null || typeof value === "number") {
     return value;
   }
