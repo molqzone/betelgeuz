@@ -151,6 +151,15 @@ export type AttachRef = {
   attachId: string;
 };
 
+/** Re-establishes the session of an existing attach after a drop. Carries the
+ *  same one-use credential flow as `AttachRequest`; the attach's strategy is
+ *  kept, so no `strategyId` is accepted here. */
+export type ReconnectRequest = AttachRef & {
+  catalog: ProfileCatalog;
+  credentialSecrets?: CredentialSecrets | null;
+  target: TargetOverrides;
+};
+
 export type DisconnectResult = {
   state: ConnectionState;
 };

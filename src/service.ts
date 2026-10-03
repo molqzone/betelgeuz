@@ -31,6 +31,7 @@ import type {
   LogsParams,
   LogsResult,
   ProxyHopProfile,
+  ReconnectRequest,
   RestartRequest,
   ResolveProfileParams,
   ResolveProfileResult,
@@ -38,6 +39,7 @@ import type {
   StartRequest,
   StatusRequest,
   StopRequest,
+  VerifiedTargetIdentity,
 } from "./protocol";
 import {
   SshApplicationStrategy,
@@ -47,11 +49,25 @@ import {
   type RunOutcome,
 } from "./strategies/ssh-app";
 
+/** The identity-relevant fields an attach binds to: the endpoint plus the
+ *  profile's pins. Anything else (keepalive, credential reference) may change
+ *  without touching the binding. */
+type IdentityBinding = {
+  boardId?: string;
+  deviceId?: string;
+  host: string;
+  hostKey?: string;
+  port: number;
+  socId?: string;
+  username: string;
+};
+
 export class CoreService<T extends SshTransport> {
   private attachedId?: string;
   private nextAttachId = 1;
   private nextOperationId = 1;
   private activeStrategyId?: string;
+  private boundTarget?: IdentityBinding;
   private readonly application: SshApplicationStrategy;
 
   constructor(private readonly transport: T) {
@@ -87,6 +103,84 @@ export class CoreService<T extends SshTransport> {
       });
     }
     const resolved = resolveProfile(request.catalog, request.target);
+    const identity = await this.handshake(
+      resolved,
+      request.credentialSecrets,
+      signal
+    );
+    const attachId = `attach-${this.nextAttachId}`;
+    this.nextAttachId += 1;
+    this.attachedId = attachId;
+    this.activeStrategyId = request.strategyId;
+    this.boundTarget = identityBindingOf(resolved);
+    return {
+      attachId,
+      identity,
+      operations: [],
+      profile: publicProfile(resolved),
+      state: "attached",
+      strategyId: request.strategyId,
+    };
+  }
+
+  /**
+   * Re-establishes the session of an existing attach after a drop, keeping the
+   * attach's identity, strategy, and per-attach history. The identity handshake
+   * runs in full before anything is reported — the plan's rule is that a
+   * reconnect re-validates identity before the UI reports target state.
+   *
+   * A pin mismatch or an identity-relevant settings change invalidates the
+   * attach (plan §3: the old binding is discarded); a plain connectivity
+   * failure keeps it, so the bounded retry loop can try again.
+   */
+  async reconnect(
+    request: ReconnectRequest,
+    signal?: AbortSignal
+  ): Promise<AttachResult> {
+    throwIfAborted(signal, "connect");
+    const strategyId = this.activeStrategyId;
+    if (this.attachedId === undefined || this.attachedId !== request.attachId) {
+      throw new BetelgeuzError("identity.instance-changed", {
+        detail: "the named attach is not the active attach",
+      });
+    }
+    const resolved = resolveProfile(request.catalog, request.target);
+    if (!sameBinding(this.boundTarget, identityBindingOf(resolved))) {
+      await this.abandonAttach();
+      throw new BetelgeuzError("identity.instance-changed", {
+        detail: "the configured target identity changed since this attach was bound",
+      });
+    }
+    let identity;
+    try {
+      identity = await this.handshake(resolved, request.credentialSecrets, signal);
+    } catch (error) {
+      if (isIdentityFailure(error)) {
+        // A revalidation failure is a statement about the binding, not the
+        // network: the board in front of us is not the one this attach
+        // verified, so the binding is discarded rather than retried.
+        await this.abandonAttach();
+      }
+      throw error;
+    }
+    return {
+      attachId: request.attachId,
+      identity,
+      operations: [],
+      profile: publicProfile(resolved),
+      state: "attached",
+      strategyId: strategyId ?? "unknown",
+    };
+  }
+
+  /** The full identity handshake: pin check before any target data is read,
+   *  then descriptor verification against the profile's pins. Shared by
+   *  `attach` and `reconnect` so revalidation can never drift from binding. */
+  private async handshake(
+    resolved: ResolvedTargetProfile,
+    credentialSecrets: CredentialSecrets | null | undefined,
+    signal?: AbortSignal
+  ): Promise<VerifiedTargetIdentity> {
     const hostKey = resolved.hostKey;
     if (hostKey === undefined) {
       throw new BetelgeuzError("ssh.hostkey-mismatch", {
@@ -108,7 +202,7 @@ export class CoreService<T extends SshTransport> {
 
     // One-use credential material: entries move out of a shallow copy, so a
     // reference used twice errors instead of silently duplicating secrets.
-    const secrets: CredentialSecrets = { ...request.credentialSecrets };
+    const secrets: CredentialSecrets = { ...credentialSecrets };
     const authentications: Array<Authentication> = [];
     let connected = false;
     try {
@@ -133,22 +227,11 @@ export class CoreService<T extends SshTransport> {
       throwIfAborted(signal, "identity");
       assertDescriptorMatches(descriptor, resolved);
 
-      const attachId = `attach-${this.nextAttachId}`;
-      this.nextAttachId += 1;
-      this.attachedId = attachId;
-      this.activeStrategyId = request.strategyId;
       return {
-        attachId,
-        identity: {
-          descriptor,
-          host: resolved.host,
-          hostKeyFingerprint: pin.asString(),
-          port: resolved.port,
-        },
-        operations: [],
-        profile: publicProfile(resolved),
-        state: "attached",
-        strategyId: request.strategyId,
+        descriptor,
+        host: resolved.host,
+        hostKeyFingerprint: pin.asString(),
+        port: resolved.port,
       };
     } catch (error) {
       if (connected) {
@@ -181,6 +264,7 @@ export class CoreService<T extends SshTransport> {
     this.application.reset();
     this.attachedId = undefined;
     this.activeStrategyId = undefined;
+    this.boundTarget = undefined;
     await this.transport.close();
     return { state: "disconnected" };
   }
@@ -196,6 +280,7 @@ export class CoreService<T extends SshTransport> {
   async abandonAttach(): Promise<DisconnectResult> {
     this.attachedId = undefined;
     this.activeStrategyId = undefined;
+    this.boundTarget = undefined;
     this.application.resetForcibly();
     await this.transport.close();
     return { state: "disconnected" };
@@ -269,6 +354,34 @@ export class CoreService<T extends SshTransport> {
 
 function endpointFor(resolved: ResolvedTargetProfile): SshEndpoint {
   return { host: resolved.host, port: resolved.port, username: resolved.username };
+}
+
+function identityBindingOf(resolved: ResolvedTargetProfile): IdentityBinding {
+  return {
+    host: resolved.host,
+    port: resolved.port,
+    username: resolved.username,
+    hostKey: resolved.hostKey,
+    deviceId: resolved.deviceId,
+    boardId: resolved.boardId,
+    socId: resolved.socId,
+  };
+}
+
+function sameBinding(a: IdentityBinding | undefined, b: IdentityBinding): boolean {
+  return a !== undefined && JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Pin mismatches and descriptor mismatches are statements about which board
+ *  is in front of us — they invalidate the binding. Connectivity and auth
+ *  failures are statements about the network and keep it. */
+function isIdentityFailure(error: unknown): boolean {
+  return (
+    error instanceof BetelgeuzError &&
+    (error.code === "ssh.hostkey-mismatch" ||
+      error.code === "identity.descriptor-mismatch" ||
+      error.code === "identity.instance-changed")
+  );
 }
 
 function publicProfile(resolved: ResolvedTargetProfile): ResolvedProfile {

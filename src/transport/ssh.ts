@@ -184,10 +184,15 @@ export class SshClient implements SshTransport {
     }
 
     this.client = client;
+    // A previous session's SFTP wrapper belongs to its own channels; keeping it
+    // would silently reuse a dead session after a reconnect.
+    this.sftp = undefined;
     this.connected = true;
     this.intentionalClose = false;
-    client.on("close", () => this.reportLossIfUnintentional(undefined));
-    client.on("error", (error) => this.reportLossIfUnintentional(error));
+    // Listeners are bound to *this* client: a late close/error from a replaced
+    // session must never report the current one as lost.
+    client.on("close", () => this.reportLossIfUnintentional(client, undefined));
+    client.on("error", (error) => this.reportLossIfUnintentional(client, error));
   }
 
   onSessionLoss(listener: (loss: SessionLoss) => void): () => void {
@@ -340,8 +345,13 @@ export class SshClient implements SshTransport {
     return this.sftp;
   }
 
-  private reportLossIfUnintentional(error: unknown): void {
+  private reportLossIfUnintentional(client: Client, error: unknown): void {
+    if (this.client !== client) {
+      // A replaced session settling late says nothing about the current one.
+      return;
+    }
     this.connected = false;
+    this.sftp = undefined;
     if (this.intentionalClose) {
       return;
     }

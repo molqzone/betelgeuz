@@ -243,4 +243,153 @@ describe("CoreService", () => {
     expect(probed.hostKeyFingerprint).toBe(PIN);
     expect(service.resolveProfile(PROFILE_PARAMS).profile.hostKeyPinned).toBe(false);
   });
+
+  it("reconnects the same attach after a drop, keeping its identity", async () => {
+    const transport = new FakeSshTransport();
+    transport.setDescriptor({ deviceId: "board-1" });
+    const service = new CoreService(transport);
+    const attached = await service.attach(request());
+    transport.dropConnection("ssh.lost", "cable pulled");
+
+    const reconnected = await service.reconnect({
+      attachId: attached.attachId,
+      catalog: {},
+      target: request().target,
+      credentialSecrets: { board: { password: "fresh-secret" } },
+    });
+
+    expect(reconnected.attachId).toBe("attach-1");
+    expect(reconnected.state).toBe("attached");
+    expect(reconnected.strategyId).toBe("linux.ssh-app");
+    expect(reconnected.identity.descriptor).toEqual({ deviceId: "board-1" });
+  });
+
+  it("keeps the attach when reconnect only fails to reach the board", async () => {
+    const transport = new FakeSshTransport();
+    const service = new CoreService(transport);
+    const attached = await service.attach(request());
+    transport.dropConnection("ssh.lost", "cable pulled");
+    transport.setConnectFailure(true);
+
+    await expect(
+      service.reconnect({
+        attachId: attached.attachId,
+        catalog: {},
+        target: request().target,
+        credentialSecrets: { board: { password: "fresh-secret" } },
+      })
+    ).rejects.toMatchObject({ code: "ssh.unreachable" });
+
+    // The binding survives a network failure, so the retry loop can try again
+    // without creating a second attach.
+    transport.setConnectFailure(false);
+    await expect(
+      service.reconnect({
+        attachId: attached.attachId,
+        catalog: {},
+        target: request().target,
+        credentialSecrets: { board: { password: "retry-secret" } },
+      })
+    ).resolves.toMatchObject({ attachId: "attach-1", state: "attached" });
+  });
+
+  it("invalidates the attach when revalidation sees a different host key", async () => {
+    const transport = new FakeSshTransport();
+    const service = new CoreService(transport);
+    const attached = await service.attach(request());
+    transport.dropConnection("ssh.lost", "cable pulled");
+    transport.setHostKey(HostKeyFingerprint.parse(OTHER_PIN));
+
+    await expect(
+      service.reconnect({
+        attachId: attached.attachId,
+        catalog: {},
+        target: request().target,
+        credentialSecrets: { board: { password: "fresh-secret" } },
+      })
+    ).rejects.toMatchObject({ code: "ssh.hostkey-mismatch" });
+
+    // The old binding is gone: a new handshake binds a new attach.
+    transport.setHostKey(HostKeyFingerprint.parse(PIN));
+    await expect(service.attach(request())).resolves.toMatchObject({
+      attachId: "attach-2",
+      state: "attached",
+    });
+  });
+
+  it("invalidates the attach when revalidation sees a different board", async () => {
+    const transport = new FakeSshTransport();
+    transport.setDescriptor({ deviceId: "board-1" });
+    const service = new CoreService(transport);
+    const attached = await service.attach(
+      request({
+        target: {
+          host: "board.local",
+          username: "root",
+          credentialRef: "board",
+          hostKey: PIN,
+          deviceId: "board-1",
+        },
+      })
+    );
+    transport.dropConnection("ssh.lost", "cable pulled");
+    transport.setDescriptor({ deviceId: "board-2" });
+
+    await expect(
+      service.reconnect({
+        attachId: attached.attachId,
+        catalog: {},
+        target: {
+          host: "board.local",
+          username: "root",
+          credentialRef: "board",
+          hostKey: PIN,
+          deviceId: "board-1",
+        },
+        credentialSecrets: { board: { password: "fresh-secret" } },
+      })
+    ).rejects.toMatchObject({ code: "identity.descriptor-mismatch" });
+
+    await expect(service.attach(request())).resolves.toMatchObject({
+      attachId: "attach-2",
+    });
+  });
+
+  it("invalidates the attach when the configured identity changed since binding", async () => {
+    const transport = new FakeSshTransport();
+    const service = new CoreService(transport);
+    const attached = await service.attach(request());
+    transport.dropConnection("ssh.lost", "cable pulled");
+
+    await expect(
+      service.reconnect({
+        attachId: attached.attachId,
+        catalog: {},
+        target: {
+          host: "board.local",
+          username: "root",
+          credentialRef: "board",
+          hostKey: PIN,
+          deviceId: "board-1",
+        },
+        credentialSecrets: { board: { password: "fresh-secret" } },
+      })
+    ).rejects.toMatchObject({ code: "identity.instance-changed" });
+
+    await expect(service.attach(request())).resolves.toMatchObject({
+      attachId: "attach-2",
+    });
+  });
+
+  it("rejects a reconnect naming an attach that is not active", async () => {
+    const service = new CoreService(new FakeSshTransport());
+    await expect(
+      service.reconnect({
+        attachId: "attach-999",
+        catalog: {},
+        target: request().target,
+        credentialSecrets: { board: { password: "fresh-secret" } },
+      })
+    ).rejects.toMatchObject({ code: "identity.instance-changed" });
+  });
 });
