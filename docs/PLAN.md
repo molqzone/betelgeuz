@@ -528,6 +528,25 @@ Implementation status: `betelgeuz.deploy.source` selects where the artifact come
 - Keep the host-side output ring buffer serving `fetch recent output` after the process has ended or the connection dropped.
 - Acceptance: a mid-session drop during and after a deploy reconnects, re-validates identity, restores accurate state, and reports the foreground process outcome without a window reload.
 
+Implementation status: the drop no longer tears the attach down — the surface
+runs a bounded reconnect loop (`src/reconnect.ts`: exponential backoff, named
+attempt budget, cancellable waits) over `CoreService.reconnect`, which performs
+the full identity handshake each attempt and invalidates the binding on a pin
+mismatch or an identity-settings change. An explicit `Disconnect`, a manual
+`Connect`, or window shutdown aborts the loop; UI writes carry an epoch so a
+stale attempt cannot repaint over a newer user action.
+
+Run reconciliation is the honest half of this phase. Every launched command
+announces its own pid on its first stdout line, so a run whose channel dies
+without an exit status is held as an *orphan* rather than guessed at:
+`inspect` probes the recorded pid and reports exited (with unobserved details
+stated as such) or still running, and refuses `runtime.orphan-risk` when
+nothing can be proven. `Stop` for an orphan signals the recorded process
+group directly and proves the exit by probe. What remains outstanding is the
+acceptance run itself against a Tier 1 board (mid-session drop during and
+after a deploy) and the target-capability probe for process-group signalling
+that §4's disconnect policy asks for.
+
 ### Phase 4: Service mode (systemd)
 
 - Add optional systemd service-managed run mode when the target service manager and pre-provisioned unit pass capability checks; expose a clear fallback to foreground mode otherwise.

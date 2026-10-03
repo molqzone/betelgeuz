@@ -11,9 +11,10 @@ import type {
 import { ATTACH_STRATEGY_KEY, TARGET_PROFILE_KEY } from "../protocol";
 import type { SessionLoss } from "../transport";
 import { CoreService } from "../service";
-import type { ApplicationRun } from "../strategies/ssh-app";
+import type { ApplicationRun, RunOutcome } from "../strategies/ssh-app";
 import { SshClient } from "../transport/ssh";
 import { clearCredential, loadCredential } from "./credentials";
+import { runReconnect } from "../reconnect";
 import {
   persistAttach,
   persistedAttachFrom,
@@ -39,6 +40,12 @@ interface WorkspaceRuntime {
   lastVerified?: PersistedAttach;
   lastError?: BetelgeuzError;
   run?: ApplicationRun;
+  /** Bumped on every user-driven transition (T3): async work carries the
+   *  epoch it was issued in, and writes from a stale epoch are dropped. */
+  epoch: number;
+  /** Aborts the automatic reconnect loop — an explicit Disconnect or a new
+   *  user action stops all retries. */
+  reconnectAbort?: AbortController;
 }
 
 interface ProfilePick extends vscode.QuickPickItem {
@@ -105,6 +112,10 @@ export class ExtensionController implements vscode.Disposable {
     }
     this.disposed = true;
     for (const runtime of this.runtimes.values()) {
+      // Shutdown stops retries like an explicit Disconnect does.
+      runtime.epoch += 1;
+      runtime.reconnectAbort?.abort("shutting down");
+      runtime.reconnectAbort = undefined;
       const attach = runtime.attach;
       const closing = attach === undefined
         ? runtime.transport.close()
@@ -211,6 +222,11 @@ export class ExtensionController implements vscode.Disposable {
       await vscode.window.showInformationMessage("Betelgeuz is already connected.");
       return;
     }
+    // A user-initiated connect supersedes any reconnect in flight.
+    runtime.epoch += 1;
+    runtime.reconnectAbort?.abort("user cancelled");
+    runtime.reconnectAbort = undefined;
+    const epoch = runtime.epoch;
     this.activeFolderKey = folder.uri.toString();
     runtime.state = "connecting";
     runtime.lastError = undefined;
@@ -270,6 +286,15 @@ export class ExtensionController implements vscode.Disposable {
               signal
             )
         );
+        if (runtime.epoch !== epoch) {
+          // A newer user action (Disconnect, a second Connect) owns the state
+          // now; this result is stale and its writes are dropped (T3). The
+          // attach it created is released so the next Connect can bind.
+          await runtime.core
+            .disconnect({ attachId: attach.attachId })
+            .catch((stale: unknown) => this.logFailure(stale, "connect"));
+          return;
+        }
         runtime.attach = attach;
         runtime.lastVerified = persistedAttachFrom(attach);
         runtime.state = "attached";
@@ -304,10 +329,12 @@ export class ExtensionController implements vscode.Disposable {
       if (material !== undefined) {
         clearCredential(material);
       }
-      if (!connected) {
+      if (!connected && runtime.epoch === epoch) {
         runtime.state = "disconnected";
       }
-      this.refreshStatus();
+      if (runtime.epoch === epoch) {
+        this.refreshStatus();
+      }
     }
   }
 
@@ -317,6 +344,10 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.runtime(folder);
+    // An explicit Disconnect stops all retries and owns the state from here.
+    runtime.epoch += 1;
+    runtime.reconnectAbort?.abort("user cancelled");
+    runtime.reconnectAbort = undefined;
     if (runtime.attach === undefined) {
       runtime.state = "disconnected";
       this.refreshStatus();
@@ -567,6 +598,7 @@ export class ExtensionController implements vscode.Disposable {
       transport,
       state: "disconnected",
       lastVerified: readPersistedAttach(this.context.workspaceState, key),
+      epoch: 0,
     };
     this.runtimes.set(key, runtime);
     const unsubscribe = transport.onSessionLoss((loss) => {
@@ -584,18 +616,122 @@ export class ExtensionController implements vscode.Disposable {
     loss: SessionLoss
   ): Promise<void> {
     const attach = runtime.attach;
-    runtime.attach = undefined;
-    runtime.run = undefined;
-    runtime.state = "disconnected";
     runtime.lastError = new BetelgeuzError(loss.cause, { detail: loss.detail });
     this.log(`SSH session lost for ${folder.name}: ${loss.cause}`);
+    if (attach === undefined) {
+      runtime.state = "disconnected";
+      this.refreshStatus();
+      return;
+    }
+    // The connection is a state of the attach, not the attach itself (plan
+    // §3): a drop triggers bounded automatic reconnect, not teardown.
+    const epoch = runtime.epoch;
+    runtime.state = "reconnecting";
     this.refreshStatus();
-    if (attach !== undefined) {
+    const abort = new AbortController();
+    runtime.reconnectAbort = abort;
+    try {
+      await runReconnect(
+        async () => {
+          const catalog = readProfileCatalog();
+          const target = readTarget(folder);
+          const credentialRef = credentialFor(catalog, target);
+          const material = await loadCredential(this.context.secrets, credentialRef);
+          if (material === undefined) {
+            throw new BetelgeuzError("ssh.auth-failed", {
+              detail: `no credential is stored for ${credentialRef}`,
+            });
+          }
+          try {
+            await runtime.core.reconnect(
+              {
+                attachId: attach.attachId,
+                catalog,
+                target,
+                credentialSecrets: { [credentialRef]: material },
+              },
+              abort.signal
+            );
+          } finally {
+            clearCredential(material);
+          }
+        },
+        {
+          signal: abort.signal,
+          onRetry: (error, retry, delayMs) => {
+            const code = isBetelgeuzError(error) ? error.code : "internal.unexpected";
+            this.log(
+              `Reconnect attempt ${retry} for ${folder.name} failed: ${code}; retrying in ${delayMs} ms`
+            );
+          },
+        }
+      );
+      if (runtime.epoch !== epoch) {
+        return; // a newer user action owns the state now
+      }
+      runtime.state = "attached";
+      runtime.lastError = undefined;
+      this.log(`Reconnected to ${folder.name}; restoring target state`);
+      this.refreshStatus();
+      await this.restoreTargetState(folder, runtime, epoch);
+    } catch (error) {
+      if (runtime.epoch !== epoch) {
+        return;
+      }
+      const failure = isBetelgeuzError(error)
+        ? error
+        : BetelgeuzError.wrapUnexpected("connect", error);
+      if (failure.code === "operation.cancelled") {
+        // An explicit Disconnect or a new action stopped the retries; that
+        // owner reports the state.
+        return;
+      }
+      // The binding may already be gone (a revalidation failure invalidates
+      // it inside `reconnect`); `abandonAttach` is idempotent either way.
       await runtime.core.abandonAttach();
+      runtime.attach = undefined;
+      runtime.run = undefined;
+      runtime.state = "disconnected";
+      runtime.lastError = failure;
+      this.log(`Reconnect to ${folder.name} gave up: ${failure.code}`);
+      this.refreshStatus();
+      if (this.activeFolderKey === folder.uri.toString()) {
+        await this.showFailure(failure, "connect");
+      }
+    } finally {
+      if (runtime.reconnectAbort === abort) {
+        runtime.reconnectAbort = undefined;
+      }
     }
-    if (this.activeFolderKey === folder.uri.toString()) {
-      await this.showFailure(runtime.lastError, "connect");
+  }
+
+  /** Re-queries the target after a reconnect and reports what became of the
+   *  foreground run while the channel was gone. */
+  private async restoreTargetState(
+    folder: vscode.WorkspaceFolder,
+    runtime: WorkspaceRuntime,
+    epoch: number
+  ): Promise<void> {
+    const attach = runtime.attach;
+    if (attach === undefined) {
+      return;
     }
+    try {
+      const status = await runtime.core.status({ attachId: attach.attachId });
+      if (runtime.epoch !== epoch) {
+        return;
+      }
+      const detail = status.outcome === undefined
+        ? ""
+        : ` (${describeOutcome(status.outcome)})`;
+      this.log(`Target application: ${status.state}${detail}`);
+    } catch (error) {
+      if (runtime.epoch !== epoch) {
+        return;
+      }
+      this.logFailure(error, "lifecycle");
+    }
+    this.refreshStatus();
   }
 
   private async withCancellableProgress<T>(
@@ -702,4 +838,17 @@ function statusLabel(state: ConnectionState): string {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.stack ?? error.message : String(error);
+}
+
+/** Renders a run outcome for the log — including its own gaps: an outcome
+ *  with neither status nor signal is an exit whose details were never
+ *  observed, and the log says exactly that. */
+function describeOutcome(outcome: RunOutcome): string {
+  if (outcome.status !== undefined) {
+    return `exit status ${outcome.status}`;
+  }
+  if (outcome.signal !== undefined) {
+    return `terminating signal ${outcome.signal}`;
+  }
+  return "exit status not observed";
 }
