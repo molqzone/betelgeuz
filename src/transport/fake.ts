@@ -34,9 +34,23 @@ export class FakeSshTransport implements SshTransport {
   private files = new Map<string, Buffer>();
   private lossListeners = new Set<(loss: SessionLoss) => void>();
   private descriptor: HardwareDescriptor = {};
+  /** The process identities the fake target reports as live; signalling a
+   *  process group ends them unless a test says otherwise. */
+  private readonly processes = new Set<number>();
+  private killable = true;
 
   setHostKey(hostKey: HostKeyFingerprint): void {
     this.hostKey = hostKey;
+  }
+
+  /** Marks a pid as running on the fake target so reconciliation can find it. */
+  setProcessAlive(pid: number): void {
+    this.processes.add(pid);
+  }
+
+  /** Makes signalling a no-op, for processes that outlive SIGKILL. */
+  setProcessUnkillable(): void {
+    this.killable = false;
   }
 
   setConnectFailure(fail: boolean): void {
@@ -135,6 +149,26 @@ export class FakeSshTransport implements SshTransport {
         stream: "stdout",
         bytes: Buffer.from("writable\tyes\nfreeBytes\t104857600\nnoexec\tno\n"),
       });
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
+    if (events === undefined && request.command.startsWith("if kill -0 ")) {
+      const pid = Number(request.command.match(/^if kill -0 ([0-9]+)/)?.[1]);
+      handle.push({
+        kind: "output",
+        stream: "stdout",
+        bytes: Buffer.from(this.processes.has(pid) ? "alive" : "gone"),
+      });
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
+    if (events === undefined && request.command.startsWith("kill -s ")) {
+      const pid = Number(request.command.match(/-- -([0-9]+)$/)?.[1]);
+      if (this.killable) {
+        this.processes.delete(pid);
+      }
       handle.push({ kind: "exit", status: 0 });
       handle.push(null);
       return handle;

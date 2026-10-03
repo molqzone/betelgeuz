@@ -104,7 +104,23 @@ export type FixedCommand =
   | { kind: "readHardwareDescriptor" }
   | { kind: "readRuntimeProbe" }
   | { kind: "makeDirectory"; directory: string }
-  | { kind: "preflightDestination"; directory: string };
+  | { kind: "preflightDestination"; directory: string }
+  | { kind: "probeProcess"; pid: number }
+  | { kind: "signalProcessGroup"; pid: number; signal: "TERM" | "KILL" };
+
+/** The launcher's identity marker: the first stdout line of every launched
+ *  command reports the pid the exec'd program will have (`$$` survives
+ *  `exec`). The strategy consumes the line as run identity; it is never
+ *  application output. */
+export const LAUNCH_PID_MARKER = "betelgeuz-pid";
+
+/** Parses the launcher's first-line pid marker. Returns `undefined` when the
+ *  line is ordinary output — the strategy treats that as a run without a
+ *  recorded identity, never as an error. */
+export function parseLaunchPidLine(line: string): number | undefined {
+  const match = /^betelgeuz-pid\t([1-9][0-9]{0,9})$/.exec(line);
+  return match === null ? undefined : Number(match[1]);
+}
 
 /** One exec command. Construct it through `launch` or `fixed`; the rendered
  * command string is not part of the public surface. */
@@ -138,7 +154,13 @@ export class ExecRequest {
     for (const argument of launch.argv) {
       command += ` ${shellQuote(argument)}`;
     }
-    return new ExecRequest(command, launch.allocatePty);
+    // `$$` is this shell's pid and `exec` keeps it, so the marker names the
+    // program's pid — the process identity the core reconciles after a
+    // dropped channel (plan §4). The marker precedes all program output.
+    return new ExecRequest(
+      `printf '${LAUNCH_PID_MARKER}\\t%s\\n' "$$" && ${command}`,
+      launch.allocatePty
+    );
   }
 
   static fixed(template: FixedCommand): ExecRequest {
@@ -162,7 +184,29 @@ export class ExecRequest {
           `printf 'writable\\t'; if test -d ${shellQuote(template.directory)} && test -w ${shellQuote(template.directory)}; then printf yes; else printf no; fi; printf '\\n'; printf 'freeBytes\\t'; df -Pk ${shellQuote(template.directory)} 2>/dev/null | tail -n 1 | awk '{print $4 * 1024}'; printf '\\n'; printf 'noexec\\t'; if command -v findmnt >/dev/null 2>&1; then if findmnt -T ${shellQuote(template.directory)} -no OPTIONS 2>/dev/null | tr ',' '\\n' | grep -qx noexec; then printf yes; else printf no; fi; else printf unknown; fi; printf '\\n'`,
           false
         );
+      case "probeProcess":
+        requirePid(template.pid);
+        return new ExecRequest(
+          `if kill -0 ${template.pid} 2>/dev/null; then printf 'alive'; else printf 'gone'; fi`,
+          false
+        );
+      case "signalProcessGroup":
+        requirePid(template.pid);
+        return new ExecRequest(
+          `kill -s ${template.signal} -- -${template.pid}`,
+          false
+        );
     }
+  }
+}
+
+/** Remote pids come from the launcher's marker, but they are still numbers
+ *  rendered into a command line: only decimal integers are accepted. */
+function requirePid(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new BetelgeuzError("config.invalid", {
+      detail: "pid must be a positive integer",
+    });
   }
 }
 

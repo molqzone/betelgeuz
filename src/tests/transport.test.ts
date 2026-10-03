@@ -43,9 +43,19 @@ describe("ExecRequest", () => {
       })
     );
     expect(request.command).toBe(
-      "cd '/opt' && MODE='it'\\''s a test' exec '/opt/my app' '--name=bob'\\''s'"
+      "printf 'betelgeuz-pid\\t%s\\n' \"$$\" && cd '/opt' && MODE='it'\\''s a test' exec '/opt/my app' '--name=bob'\\''s'"
     );
     expect(request.allocatePty).toBe(false);
+  });
+
+  it("reports the run's pid as the first stdout line of every launch", () => {
+    // `$$` survives `exec`, so the marker names the program's own pid — the
+    // process identity the core reconciles after a dropped channel.
+    const request = ExecRequest.launch(launchRequest({ executable: "/opt/app" }));
+    expect(
+      request.command.startsWith("printf 'betelgeuz-pid\\t%s\\n' \"$$\" && ")
+    ).toBe(true);
+    expect(request.command.endsWith("exec '/opt/app'")).toBe(true);
   });
 
   it("rejects NUL bytes and non-identifier environment names", () => {
@@ -84,6 +94,22 @@ describe("ExecRequest", () => {
     expect(request.command).toBe("mkdir -p -- '/opt/app; rm -rf /'");
     expect(
       codeOf(() => ExecRequest.fixed({ kind: "makeDirectory", directory: "bad\0" }))
+    ).toBe("config.invalid");
+  });
+
+  it("probes and signals only validated process identities", () => {
+    expect(ExecRequest.fixed({ kind: "probeProcess", pid: 1234 }).command).toBe(
+      "if kill -0 1234 2>/dev/null; then printf 'alive'; else printf 'gone'; fi"
+    );
+    expect(
+      ExecRequest.fixed({ kind: "signalProcessGroup", pid: 1234, signal: "TERM" })
+        .command
+    ).toBe("kill -s TERM -- -1234");
+    expect(codeOf(() => ExecRequest.fixed({ kind: "probeProcess", pid: -1 }))).toBe(
+      "config.invalid"
+    );
+    expect(
+      codeOf(() => ExecRequest.fixed({ kind: "probeProcess", pid: 1.5 }))
     ).toBe("config.invalid");
   });
 });

@@ -459,7 +459,9 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.requireAttached(folder);
-    const status = runtime.core.status({ attachId: runtime.attach?.attachId as string });
+    const status = await runtime.core.status({
+      attachId: runtime.attach?.attachId as string,
+    });
     this.log(`Target application status: ${status.state}`);
     await vscode.window.showInformationMessage(
       `Betelgeuz target application: ${status.state}.`

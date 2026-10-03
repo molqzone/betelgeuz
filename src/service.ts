@@ -328,9 +328,12 @@ export class CoreService<T extends SshTransport> {
     return await this.application.restart(request.configuration, onOutput, signal);
   }
 
-  status(request: StatusRequest): ApplicationStatus {
+  async status(
+    request: StatusRequest,
+    signal?: AbortSignal
+  ): Promise<ApplicationStatus> {
     this.requireApplicationAttach(request.attachId);
-    return this.application.status();
+    return await this.application.inspect(signal);
   }
 
   logs(request: LogsParams): LogsResult {

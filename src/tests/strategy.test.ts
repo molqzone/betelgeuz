@@ -43,6 +43,26 @@ async function connected(): Promise<FakeSshTransport> {
   return transport;
 }
 
+/** The command `start({ remotePath: "/opt/app" })` renders — computed, not
+ *  hardcoded, so launcher changes do not silently orphan these fixtures. */
+function appRunCommand(): string {
+  return ExecRequest.launch({
+    executable: "/opt/app",
+    argv: [],
+    cwd: "/opt",
+    environment: {},
+    allocatePty: false,
+  }).command;
+}
+
+/** Lets the channel's consumer drain a stream that has already ended. The
+ *  orphan transition happens when the consumer observes the end, not when the
+ *  fake closes it — tests that pre-close the stream must wait for that
+ *  observation before asserting on it. */
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("linux.ssh-app strategy", () => {
   it("uploads to a staging path and atomically activates the artifact", async () => {
     const directory = await mkdtemp(join(tmpdir(), "betelgeuz-strategy-"));
@@ -70,7 +90,13 @@ describe("linux.ssh-app strategy", () => {
 
   it("streams structured output and keeps a cursor-addressable ring", async () => {
     const transport = await connected();
-    const request = "cd '/opt' && MODE='test' exec '/opt/app' '--name=bob'";
+    const request = ExecRequest.launch({
+      executable: "/opt/app",
+      argv: ["--name=bob"],
+      cwd: "/opt",
+      environment: { MODE: new Secret("test") },
+      allocatePty: false,
+    }).command;
     transport.setExecEvents(request, [
       { kind: "output", stream: "stdout", bytes: Buffer.from("ready\n") },
       { kind: "output", stream: "stderr", bytes: Buffer.from("warning\n") },
@@ -91,7 +117,7 @@ describe("linux.ssh-app strategy", () => {
 
     await expect(run.completion).resolves.toEqual({ status: 7 });
     expect(output).toEqual(["stdout:ready\n", "stderr:warning\n"]);
-    expect(strategy.status()).toEqual({ state: "exited", outcome: { status: 7 } });
+    expect(await strategy.inspect()).toEqual({ state: "exited", outcome: { status: 7 } });
     expect(strategy.logs()).toMatchObject({
       chunks: [
         { stream: "stdout", bytes: Array.from(Buffer.from("ready\n")) },
@@ -266,7 +292,7 @@ describe("linux.ssh-app strategy", () => {
 
   it("pages the output ring in whole chunks and never drops a tail", async () => {
     const transport = await connected();
-    transport.setExecEvents("cd '/opt' && exec '/opt/app'", [
+    transport.setExecEvents(appRunCommand(), [
       { kind: "output", stream: "stdout", bytes: Buffer.from("aaaa") },
       { kind: "output", stream: "stdout", bytes: Buffer.from("bbbb") },
       { kind: "output", stream: "stdout", bytes: Buffer.from("cccc") },
@@ -295,7 +321,7 @@ describe("linux.ssh-app strategy", () => {
 
   it("emits at least one chunk when a single one exceeds the page", async () => {
     const transport = await connected();
-    transport.setExecEvents("cd '/opt' && exec '/opt/app'", [
+    transport.setExecEvents(appRunCommand(), [
       { kind: "output", stream: "stdout", bytes: Buffer.from("0123456789") },
       { kind: "exit", status: 0 },
     ]);
@@ -312,7 +338,7 @@ describe("linux.ssh-app strategy", () => {
 
   it("clears per-attach history when the session is already gone", async () => {
     const transport = await connected();
-    transport.setExecEvents("cd '/opt' && exec '/opt/app'", [
+    transport.setExecEvents(appRunCommand(), [
       { kind: "output", stream: "stdout", bytes: Buffer.from("previous session\n") },
       { kind: "exit", status: 3 },
     ]);
@@ -324,7 +350,7 @@ describe("linux.ssh-app strategy", () => {
     strategy.resetForcibly();
 
     expect(strategy.logs()).toEqual({ chunks: [] });
-    expect(strategy.status()).toEqual({ state: "stopped" });
+    expect(await strategy.inspect()).toEqual({ state: "stopped" });
   });
 
   it("lets a run outlive its attach and stops tracking it", async () => {
@@ -344,14 +370,14 @@ describe("linux.ssh-app strategy", () => {
     });
     const strategy = new SshApplicationStrategy(transport);
     await strategy.start({ remotePath: "/opt/app" });
-    expect(strategy.status()).toEqual({ state: "running" });
+    expect(await strategy.inspect()).toEqual({ state: "running" });
 
     strategy.resetForcibly();
 
-    expect(strategy.status()).toEqual({ state: "stopped" });
+    expect(await strategy.inspect()).toEqual({ state: "stopped" });
     const replacement = await strategy.start({ remotePath: "/opt/app" });
     expect(replacement.runId).toMatch(/^run-/);
-    expect(strategy.status()).toEqual({ state: "running" });
+    expect(await strategy.inspect()).toEqual({ state: "running" });
   });
 
   it("keeps the replacement run when the abandoned run settles late", async () => {
@@ -403,7 +429,7 @@ describe("linux.ssh-app strategy", () => {
     transport.runs[0].settle({ kind: "exit", signal: "KILL" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(strategy.status()).toEqual({ state: "running" });
+    expect(await strategy.inspect()).toEqual({ state: "running" });
     expect(transport.runs[0].terminated).toBe(false);
     await expect(strategy.stop(0)).resolves.toEqual({ signal: "TERM" });
     expect(transport.runs[1].terminated).toBe(true);
@@ -535,10 +561,215 @@ describe("linux.ssh-app strategy", () => {
     transport.runs[0].settle({ kind: "exit", signal: "KILL" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(strategy.status()).toEqual({ state: "running" });
+    expect(await strategy.inspect()).toEqual({ state: "running" });
     expect(transport.runs[0].terminated).toBe(false);
     await expect(strategy.stop(0)).resolves.toEqual({ signal: "TERM" });
     expect(transport.runs[1].terminated).toBe(true);
+  });
+
+  it("records the launcher's pid and keeps its marker out of the output", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+      { kind: "output", stream: "stdout", bytes: Buffer.from("hello\n") },
+      { kind: "exit", status: 0 },
+    ]);
+    const strategy = new SshApplicationStrategy(transport);
+    const output: Array<string> = [];
+
+    const run = await strategy.start(
+      { remotePath: "/opt/app" },
+      (chunk) => output.push(Buffer.from(chunk.bytes).toString())
+    );
+    await expect(run.completion).resolves.toEqual({ status: 0 });
+
+    // The marker names the process identity and is never application output.
+    expect(output).toEqual(["hello\n"]);
+    expect(strategy.logs().chunks.map((c) => Buffer.from(c.bytes).toString())).toEqual([
+      "hello\n",
+    ]);
+  });
+
+  it("reassembles a pid marker split across output chunks", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pi") },
+      { kind: "output", stream: "stdout", bytes: Buffer.from("d\t77\nrest\n") },
+      { kind: "exit", status: 0 },
+    ]);
+    const strategy = new SshApplicationStrategy(transport);
+    const output: Array<string> = [];
+
+    const run = await strategy.start(
+      { remotePath: "/opt/app" },
+      (chunk) => output.push(Buffer.from(chunk.bytes).toString())
+    );
+    await expect(run.completion).resolves.toEqual({ status: 0 });
+    expect(output).toEqual(["rest\n"]);
+  });
+
+  it("treats a first line that is not the marker as application output", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("ordinary\n") },
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t9\n") },
+      { kind: "exit", status: 0 },
+    ]);
+    const strategy = new SshApplicationStrategy(transport);
+    const output: Array<string> = [];
+
+    const run = await strategy.start(
+      { remotePath: "/opt/app" },
+      (chunk) => output.push(Buffer.from(chunk.bytes).toString())
+    );
+    await expect(run.completion).resolves.toEqual({ status: 0 });
+    // Only the first line may be a marker; the rest is the program's own.
+    expect(output).toEqual(["ordinary\n", "betelgeuz-pid\t9\n"]);
+  });
+
+  it("holds output that could still become the marker within a bound", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      // No newline and still a marker prefix: held until it cannot be one.
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid") },
+      { kind: "output", stream: "stdout", bytes: Buffer.from("!not-a-pid") },
+      { kind: "exit", status: 0 },
+    ]);
+    const strategy = new SshApplicationStrategy(transport);
+    const output: Array<string> = [];
+
+    const run = await strategy.start(
+      { remotePath: "/opt/app" },
+      (chunk) => output.push(Buffer.from(chunk.bytes).toString())
+    );
+    await expect(run.completion).resolves.toEqual({ status: 0 });
+    expect(output).toEqual(["betelgeuz-pid!not-a-pid"]);
+  });
+
+  it("reconciles a lost run as exited, with unobserved details", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+      // No exit event: the channel died before the process reported.
+    ]);
+    const strategy = new SshApplicationStrategy(transport);
+    const run = await strategy.start({ remotePath: "/opt/app" });
+    await settle();
+
+    // The pid is recorded but the process is gone by probe time; the outcome
+    // settles as exited with its details honestly unobserved.
+    await expect(strategy.inspect()).resolves.toEqual({
+      state: "exited",
+      outcome: {},
+    });
+    await expect(run.completion).resolves.toEqual({});
+    await expect(strategy.inspect()).resolves.toEqual({
+      state: "exited",
+      outcome: {},
+    });
+  });
+
+  it("reconciles a lost run as still running while its process lives", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+    ]);
+    transport.setProcessAlive(4242);
+    const strategy = new SshApplicationStrategy(transport);
+    await strategy.start({ remotePath: "/opt/app" });
+    await settle();
+
+    // A dead channel is not evidence about the target: the probe is.
+    await expect(strategy.inspect()).resolves.toEqual({ state: "running" });
+  });
+
+  it("refuses to report a state it cannot prove for an unidentified run", async () => {
+    const transport = await connected();
+    // Output without a marker line: the run has no recorded identity.
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("noise\n") },
+    ]);
+    const strategy = new SshApplicationStrategy(transport);
+    await strategy.start({ remotePath: "/opt/app" });
+    await settle();
+
+    await expect(strategy.inspect()).rejects.toMatchObject({
+      code: "runtime.orphan-risk",
+    });
+  });
+
+  it("stops an orphaned run through its process group and names the signal", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+    ]);
+    transport.setProcessAlive(4242);
+    const strategy = new SshApplicationStrategy(transport);
+    const run = await strategy.start({ remotePath: "/opt/app" });
+    await settle();
+
+    // The channel is gone, so Stop signals the recorded group instead.
+    await expect(strategy.stop(1_000)).resolves.toEqual({ signal: "TERM" });
+    await expect(run.completion).resolves.toEqual({ signal: "TERM" });
+    await expect(strategy.inspect()).resolves.toEqual({
+      state: "exited",
+      outcome: { signal: "TERM" },
+    });
+  });
+
+  it("escalates to SIGKILL for an orphaned run that survives SIGTERM", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+    ]);
+    transport.setProcessAlive(4242);
+    transport.setProcessUnkillable();
+    const strategy = new SshApplicationStrategy(transport);
+    await strategy.start({ remotePath: "/opt/app" });
+    await settle();
+
+    // Nothing can prove this process stopped, and claiming a stop would lie.
+    await expect(strategy.stop(0)).rejects.toMatchObject({
+      code: "runtime.orphan-risk",
+    });
+  });
+
+  it("settles an orphaned run as unproven when its attach is discarded", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+    ]);
+    transport.setProcessAlive(4242);
+    const strategy = new SshApplicationStrategy(transport);
+    const run = await strategy.start({ remotePath: "/opt/app" });
+    await settle();
+    // Attached before the discard so the rejection is never unobserved.
+    const unproven = expect(run.completion).rejects.toMatchObject({
+      code: "runtime.orphan-risk",
+    });
+
+    strategy.resetForcibly();
+
+    // The run is discarded with its fate unproven, and says so.
+    await unproven;
+    await expect(strategy.inspect()).resolves.toEqual({ state: "stopped" });
+  });
+
+  it("refuses to start a second run while the previous one still lives", async () => {
+    const transport = await connected();
+    transport.setExecEvents(appRunCommand(), [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+    ]);
+    transport.setProcessAlive(4242);
+    const strategy = new SshApplicationStrategy(transport);
+    await strategy.start({ remotePath: "/opt/app" });
+    await settle();
+
+    // The dead channel is not evidence the process ended; the probe is, and
+    // it says the old run is still alive — starting must not race it.
+    await expect(strategy.start({ remotePath: "/opt/app" })).rejects.toMatchObject({
+      code: "deploy.busy",
+    });
   });
 
 });

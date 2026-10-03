@@ -4,9 +4,9 @@ import { CoreService } from "../service";
 import { FakeSshTransport } from "../transport/fake";
 import {
   ExecHandle,
+  ExecRequest,
   HostKeyFingerprint,
   type Authentication,
-  type ExecRequest,
   type SshConnectOptions,
 } from "../transport";
 import type { AttachRequest, ProfileCatalog } from "../protocol";
@@ -262,6 +262,44 @@ describe("CoreService", () => {
     expect(reconnected.state).toBe("attached");
     expect(reconnected.strategyId).toBe("linux.ssh-app");
     expect(reconnected.identity.descriptor).toEqual({ deviceId: "board-1" });
+  });
+
+  it("reports the foreground run's reconciled state after a reconnect", async () => {
+    const transport = new FakeSshTransport();
+    transport.setDescriptor({ deviceId: "board-1" });
+    const service = new CoreService(transport);
+    const attached = await service.attach(request());
+    const runCommand = ExecRequest.launch({
+      executable: "/opt/app",
+      argv: [],
+      cwd: "/opt",
+      environment: {},
+      allocatePty: false,
+    }).command;
+    transport.setExecEvents(runCommand, [
+      { kind: "output", stream: "stdout", bytes: Buffer.from("betelgeuz-pid\t4242\n") },
+      // No exit event: the channel dies before the process reports.
+    ]);
+    const run = await service.start({
+      attachId: attached.attachId,
+      configuration: { remotePath: "/opt/app" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    transport.dropConnection("ssh.lost", "cable pulled");
+
+    await service.reconnect({
+      attachId: attached.attachId,
+      catalog: {},
+      target: request().target,
+      credentialSecrets: { board: { password: "fresh-secret" } },
+    });
+
+    // The status the UI restores is the probed truth — the run ended while its
+    // channel was gone, so its details are honestly unobserved.
+    await expect(
+      service.status({ attachId: attached.attachId })
+    ).resolves.toEqual({ state: "exited", outcome: {} });
+    await expect(run.completion).resolves.toEqual({});
   });
 
   it("keeps the attach when reconnect only fails to reach the board", async () => {
