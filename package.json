@@ -252,10 +252,6 @@
           "type": "string",
           "scope": "resource"
         },
-        "betelgeuz.deploy.runCommand": {
-          "type": "string",
-          "scope": "resource"
-        },
         "betelgeuz.deploy.runMode": {
           "type": "string",
           "scope": "resource"

@@ -125,8 +125,6 @@ export const DEPLOY_CWD_KEY = "betelgeuz.deploy.cwd";
 export const DEPLOY_ENVIRONMENT_KEY = "betelgeuz.deploy.environment";
 export const DEPLOY_FILE_MODE_KEY = "betelgeuz.deploy.fileMode";
 
-/** Legacy free-form launch setting, retained for compatibility. */
-export const DEPLOY_RUN_COMMAND_KEY = "betelgeuz.deploy.runCommand";
 export const DEPLOY_RUN_MODE_KEY = "betelgeuz.deploy.runMode";
 
 /** A pre-provisioned target service unit. */
@@ -157,7 +155,6 @@ export const FIXED_CONFIG_KEYS = [
   DEPLOY_CWD_KEY,
   DEPLOY_ENVIRONMENT_KEY,
   DEPLOY_FILE_MODE_KEY,
-  DEPLOY_RUN_COMMAND_KEY,
   DEPLOY_RUN_MODE_KEY,
   DEPLOY_SERVICE_UNIT_KEY,
 ] as const;
