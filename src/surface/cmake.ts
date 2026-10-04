@@ -8,10 +8,15 @@
  * extension's typings package: the members differ between releases and the
  * extension reaches its own API only after it has scanned for kits, so a change
  * or a slow start surfaces as an explicit diagnostic instead of a type error.
+ *
+ * When CMake Tools is absent the plan's fallback carries resolution: the File
+ * API codemodel under the workspace's build directory (the `cmake.buildDirectory`
+ * setting, or the conventional `build/`) names the same targets and artifacts.
  */
 import * as vscode from "vscode";
+import { join } from "node:path";
 
-import { BetelgeuzError } from "../errors";
+import { BetelgeuzError, isBetelgeuzError } from "../errors";
 import {
   deployableTargets,
   readCmakeTargets,
@@ -45,26 +50,70 @@ type CmakeToolsExports = CmakeToolsApi & {
   getApi?: () => Promise<CmakeToolsApi> | CmakeToolsApi;
 };
 
-/** Reads the configured target's artifact through CMake Tools. */
+/** Reads the configured target's artifact through CMake Tools. Without the
+ *  extension — or when it never exposes its API — the plan's fallback applies:
+ *  the File API codemodel under the workspace's build directory is the
+ *  remaining source (plan §6, §9). */
 export async function readCmakeArtifact(
   folder: vscode.WorkspaceFolder,
   localTarget: string | undefined
 ): Promise<ArtifactRecord> {
+  try {
+    return await viaCmakeToolsApi(folder, localTarget);
+  } catch (error) {
+    if (!isBetelgeuzError(error) || error.code !== "artifact.cmake-unavailable") {
+      throw error;
+    }
+    const targets = await readCmakeTargets(fallbackBuildDirectory(folder));
+    const path = selectCmakeArtifact(targets, localTarget);
+    return await readArtifactRecord(path, targetNameFor(targets, path));
+  }
+}
+
+/** The executable targets a workspace can choose between. Falls back exactly
+ *  like a deploy does when CMake Tools cannot answer. */
+export async function listCmakeTargets(
+  folder: vscode.WorkspaceFolder
+): Promise<Array<string>> {
+  let buildDirectory: string;
+  try {
+    buildDirectory = await buildDirectoryOf(await cmakeApi(), folder);
+  } catch (error) {
+    if (!isBetelgeuzError(error) || error.code !== "artifact.cmake-unavailable") {
+      throw error;
+    }
+    buildDirectory = fallbackBuildDirectory(folder);
+  }
+  return deployableTargets(await readCmakeTargets(buildDirectory)).map(
+    (target) => target.name
+  );
+}
+
+async function viaCmakeToolsApi(
+  folder: vscode.WorkspaceFolder,
+  localTarget: string | undefined
+): Promise<ArtifactRecord> {
   const api = await cmakeApi();
-  const buildDirectory = await buildDirectoryOf(api, folder);
-  const targets = await readCmakeTargets(buildDirectory);
+  const targets = await readCmakeTargets(await buildDirectoryOf(api, folder));
   const path = selectCmakeArtifact(targets, localTarget);
   return await readArtifactRecord(path, targetNameFor(targets, path));
 }
 
-/** The executable targets a workspace can choose between. */
-export async function listCmakeTargets(
-  folder: vscode.WorkspaceFolder
-): Promise<Array<string>> {
-  const api = await cmakeApi();
-  return deployableTargets(await readCmakeTargets(await buildDirectoryOf(api, folder))).map(
-    (target) => target.name
-  );
+/**
+ * The build directory when CMake Tools is not there to report one: the
+ * workspace's `cmake.buildDirectory` setting if the user set one, otherwise
+ * the conventional `build/` under the workspace folder. Only
+ * `${workspaceFolder}` is expanded; the other CMake Tools substitutions name
+ * state (build type, variant) an absent extension does not have.
+ */
+function fallbackBuildDirectory(folder: vscode.WorkspaceFolder): string {
+  const configured = vscode.workspace
+    .getConfiguration("cmake", folder)
+    .get<string | undefined>("buildDirectory");
+  if (configured === undefined || configured.trim() === "") {
+    return join(folder.uri.fsPath, "build");
+  }
+  return configured.replace(/\$\{workspaceFolder\}/g, folder.uri.fsPath);
 }
 
 function targetNameFor(targets: ReadonlyArray<CmakeTarget>, artifact: string): string {

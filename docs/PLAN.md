@@ -510,7 +510,11 @@ host-side output history, streamed output, exit status, stop escalation, restart
 commands. The current deploy path performs bounded ELF machine/class/endianness/interpreter
 checks and a fixed target preflight for writable, free-space, and `noexec` state before staging;
 reconnect reconciliation and systemd service mode remain outstanding within the later Phase 3/4
-acceptance gates.
+acceptance gates. The first working slice acceptance has run against the Tier 1 board over the
+end-to-end harness (`test/suite/e2e.test.ts`, run through `npm run test:e2e` with a board and
+artifact from the environment): host-key enrollment, descriptor read, deploy, foreground run with
+streamed output and exit status, stop, and disconnect all passed against a CV181x board running
+Debian, reached with key authentication (`BETELGEUZ_TEST_KEY`).
 
 ### Phase 2: CMake artifact integration
 
@@ -519,7 +523,7 @@ acceptance gates.
 - Support a workspace-level deployment profile for different binaries or boards.
 - Add cancellation and clear failure reporting for artifact resolution and deploy.
 
-Implementation status: `betelgeuz.deploy.source` selects where the artifact comes from — `cmake` (default) or `manual`, where `betelgeuz.deploy.artifactPath` still supplies the file itself. CMake Tools publishes the build directory and the target names but not a target's output path, so the artifact path comes from the File API reply under the build directory: the index names the codemodel, the codemodel names the target files, and a target file's `artifacts` resolve against the build directory. Selection applies the exactly-one rule to the target named by `betelgeuz.deploy.localTarget`; when the workspace has no choice and the project declares several executables, `Deploy` asks once and records the answer as that workspace's deployment profile. A target producing several artifacts, a target that no longer exists, and a project that was never configured each report the documented `artifact.ambiguous` or `artifact.missing` error; a missing or unactivatable CMake Tools reports `artifact.cmake-unavailable`. Resolution never invokes configure or build.
+Implementation status: `betelgeuz.deploy.source` selects where the artifact comes from — `cmake` (default) or `manual`, where `betelgeuz.deploy.artifactPath` still supplies the file itself. CMake Tools publishes the build directory and the target names but not a target's output path, so the artifact path comes from the File API reply under the build directory: the index names the codemodel, the codemodel names the target files, and a target file's `artifacts` resolve against the build directory. When CMake Tools cannot answer — absent, or never exposing its API — the plan's fallback carries resolution: the codemodel under the workspace's `cmake.buildDirectory` (or the conventional `build/`). Selection applies the exactly-one rule to the target named by `betelgeuz.deploy.localTarget`; when the workspace has no choice and the project declares several executables, `Deploy` asks once and records the answer as that workspace's deployment profile. A target producing several artifacts, a target that no longer exists, and a project that was never configured each report the documented `artifact.ambiguous` or `artifact.missing` error; a missing or unactivatable CMake Tools reports `artifact.cmake-unavailable`. Resolution never invokes a build. The CMake-source path has run against the Tier 1 board through `test/suite/cmake-source.test.ts` (`BETELGEUZ_TEST_CMAKE=1`): the harness builds the fixture's cross-compiled preset with the cmake CLI, and Betelgeuz resolves, deploys, runs, and stops that artifact without CMake Tools installed — exercising the fallback end to end. The API-first path needs a preset or kit selection a headless instance cannot answer, so its hardware acceptance remains a real-editor run (F5 against this board).
 
 ### Phase 3: Reconnect and state reconciliation
 
@@ -542,10 +546,24 @@ without an exit status is held as an *orphan* rather than guessed at:
 `inspect` probes the recorded pid and reports exited (with unobserved details
 stated as such) or still running, and refuses `runtime.orphan-risk` when
 nothing can be proven. `Stop` for an orphan signals the recorded process
-group directly and proves the exit by probe. What remains outstanding is the
-acceptance run itself against a Tier 1 board (mid-session drop during and
-after a deploy) and the target-capability probe for process-group signalling
-that §4's disconnect policy asks for.
+group directly and proves the exit by probe. §4's disconnect-policy question
+is answered the same way: rather than a pre-flight capability probe, the
+strategy signals the recorded process group and only reports an outcome the
+probe proved, so a target that cannot be signalled yields
+`runtime.orphan-risk`, never a claimed stop.
+
+The acceptance run has been performed against the Tier 1 board
+(`test/suite/drop.test.ts`, registered under `BETELGEUZ_TEST_DROP=1`): the
+harness kills the board account's unprivileged `sshd-session` processes, so
+the extension's channel drops mid-run the way a network fault drops it, and
+the launched process — which survives because `sshd` never runs its cleanup —
+is held as an orphan. The surface reconnected with bounded backoff,
+re-validated identity with a full handshake, reported the run's state from a
+probe of the recorded pid over the new session while the process was verified
+still present on the board, and later stopped it through the recorded process
+group (`TERM`, exit proven by probe), with no error notifications and no
+window reload. A drop while a deploy upload is still in flight remains to be
+scripted under the same gate.
 
 ### Phase 4: Service mode (systemd)
 

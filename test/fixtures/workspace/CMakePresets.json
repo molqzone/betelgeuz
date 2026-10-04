@@ -1,0 +1,17 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "zig-riscv64",
+      "displayName": "zig cc riscv64 cross",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "${sourceDir}/zig-cc"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "zig-riscv64", "displayName": "zig cc riscv64 cross", "configurePreset": "zig-riscv64" }
+  ]
+}
