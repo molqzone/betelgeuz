@@ -35,6 +35,9 @@ const REMOTE_PATH = BETELGEUZ_TEST_REMOTE_PATH ?? "/tmp/betelgeuz-e2e/app";
  *  resolved through the plan's File API fallback); otherwise the run takes the
  *  manual artifact path. */
 const CMAKE = BETELGEUZ_TEST_CMAKE === "1";
+/** `1` runs the small-core firmware suite (rproc.test.ts): the workspace
+ *  binds `linux.remoteproc` and deploys the manual artifact as firmware. */
+const RPROC = process.env.BETELGEUZ_TEST_RPROC === "1";
 
 async function main(): Promise<void> {
   const required: Record<string, string | undefined> = {
@@ -65,7 +68,19 @@ async function main(): Promise<void> {
   await writeFile(
     settings,
     `${JSON.stringify(
-      CMAKE
+      RPROC
+        ? {
+            "betelgeuz.attach.strategy": "linux.remoteproc",
+            "betelgeuz.attach.linux.remoteproc.instance": "cv181x-c906_1",
+            "betelgeuz.attach.linux.remoteproc.firmwarePath": "/lib/firmware/rtos.elf",
+            "betelgeuz.deploy.source": "manual",
+            "betelgeuz.deploy.artifactPath": "artifact",
+            "betelgeuz.target.credentialRef": CREDENTIAL,
+            "betelgeuz.target.host": BETELGEUZ_TEST_HOST,
+            "betelgeuz.target.port": Number(PORT),
+            "betelgeuz.target.username": USER,
+          }
+        : CMAKE
         ? {
             "betelgeuz.attach.strategy": "linux.ssh-app",
             "betelgeuz.deploy.source": "cmake",

@@ -1,4 +1,11 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+
 import { describe, expect, it, vi } from "vitest";
+
+import { Secret } from "../secret";
 
 import { CoreService } from "../service";
 import { FakeSshTransport } from "../transport/fake";
@@ -12,6 +19,14 @@ import {
 import type { AttachRequest, ProfileCatalog } from "../protocol";
 
 const PIN = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+function minimalRiscvElf(): Buffer {
+  const bytes = Buffer.alloc(64);
+  bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
+  bytes.writeUInt16LE(243, 18);
+  bytes.writeUInt16LE(64, 54);
+  return bytes;
+}
 const OTHER_PIN = "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
 function request(overrides: Partial<AttachRequest> = {}): AttachRequest {
@@ -297,7 +312,7 @@ describe("CoreService", () => {
     // The status the UI restores is the probed truth — the run ended while its
     // channel was gone, so its details are honestly unobserved.
     await expect(
-      service.status({ attachId: attached.attachId })
+      service.status({ attachId: attached.attachId, configuration: { remotePath: "/opt/app" } })
     ).resolves.toEqual({ state: "exited", outcome: {} });
     await expect(run.completion).resolves.toEqual({});
   });
@@ -429,5 +444,153 @@ describe("CoreService", () => {
         credentialSecrets: { board: { password: "fresh-secret" } },
       })
     ).rejects.toMatchObject({ code: "identity.instance-changed" });
+  });
+  it("attaches the selected small-core strategy and routes its operations", async () => {
+    const transport = new FakeSshTransport();
+    transport.setRemoteprocInstances([
+      { firmware: "/lib/firmware/rtos.elf", name: "30070000.remoteproc", state: "offline" },
+    ]);
+    const service = new CoreService(transport);
+    const attached = await service.attach(
+      request({ strategyId: "linux.remoteproc" })
+    );
+    expect(attached.strategyId).toBe("linux.remoteproc");
+    // The registry declares what this strategy's attach exposes.
+    expect(attached.operations).toEqual([
+      "deploy",
+      "start",
+      "stop",
+      "restart",
+      "restorePrevious",
+      "logs",
+    ]);
+    const configuration = {
+      firmwarePath: "/lib/firmware/rtos.elf",
+      instance: "30070000.remoteproc",
+    };
+    await expect(
+      service.status({ attachId: attached.attachId, configuration })
+    ).resolves.toMatchObject({ state: "stopped" });
+  });
+
+  it("keeps the attach when the selected strategy's interface is absent", async () => {
+    const transport = new FakeSshTransport();
+    const service = new CoreService(transport);
+    const attached = await service.attach(
+      request({ strategyId: "linux.remoteproc" })
+    );
+
+    // The board exposes no remoteproc instance: the probe reports the
+    // incompatibility (plan §3), and the binding survives it.
+    await expect(
+      service.validateStrategy({
+        attachId: attached.attachId,
+        configuration: {
+          firmwarePath: "/lib/firmware/rtos.elf",
+          instance: "30070000.remoteproc",
+        },
+      })
+    ).rejects.toMatchObject({ code: "rproc.instance-missing" });
+
+    // Still the active attach: a later strategy probe can succeed, and an
+    // explicit disconnect releases it normally.
+    transport.setRemoteprocInstances([{ name: "30070000.remoteproc" }]);
+    await expect(
+      service.validateStrategy({
+        attachId: attached.attachId,
+        configuration: {
+          firmwarePath: "/lib/firmware/rtos.elf",
+          instance: "30070000.remoteproc",
+        },
+      })
+    ).resolves.toEqual({ strategyId: "linux.remoteproc" });
+    await expect(
+      service.disconnect({ attachId: attached.attachId })
+    ).resolves.toEqual({ state: "disconnected" });
+  });
+
+  it("rejects a strategy this Betelgeuz version does not implement", async () => {
+    const service = new CoreService(new FakeSshTransport());
+    await expect(
+      service.attach(request({ strategyId: "linux.remoteproc-vendor" }))
+    ).rejects.toMatchObject({ code: "config.invalid" });
+  });
+
+  it("invalidates the attach when the bound instance moved on reconnect", async () => {
+    const transport = new FakeSshTransport();
+    transport.setRemoteprocInstances([{ name: "30070000.remoteproc", state: "offline" }]);
+    const service = new CoreService(transport);
+    const attached = await service.attach(
+      request({ strategyId: "linux.remoteproc" })
+    );
+    await service.validateStrategy({
+      attachId: attached.attachId,
+      configuration: {
+        firmwarePath: "/lib/firmware/rtos.elf",
+        instance: "30070000.remoteproc",
+      },
+    });
+    transport.dropConnection("ssh.lost", "cable pulled");
+
+    // The instance the attach bound to is gone: the binding is discarded
+    // rather than silently re-targeted.
+    transport.setRemoteprocInstances([{ name: "other.remoteproc" }]);
+    await expect(
+      service.reconnect({
+        attachId: attached.attachId,
+        catalog: {},
+        target: request().target,
+        credentialSecrets: { board: { password: "fresh-secret" } },
+      })
+    ).rejects.toMatchObject({ code: "identity.instance-changed" });
+    await expect(service.attach(request())).resolves.toMatchObject({
+      attachId: "attach-2",
+    });
+  });
+  it("deploys firmware through the selected small-core strategy", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "betelgeuz-service-"));
+    const path = join(directory, "rtos.elf");
+    await writeFile(path, minimalRiscvElf());
+    const transport = new FakeSshTransport();
+    transport.setRemoteprocInstances([
+      { firmware: "/lib/firmware/rtos.elf", name: "30070000.remoteproc", state: "offline" },
+    ]);
+    await transport.connect({
+      endpoint: { host: "board.local", port: 22, username: "root" },
+      authentication: { kind: "password", password: new Secret("test") },
+      hostKeyPin: HostKeyFingerprint.parse(PIN),
+      proxyChain: [],
+      keepaliveSeconds: 30,
+    });
+    await transport.upload(Readable.from([Buffer.from("previous-firmware")]), "/lib/firmware/rtos.elf");
+    const service = new CoreService(transport);
+    const attached = await service.attach(
+      request({ strategyId: "linux.remoteproc" })
+    );
+    const configuration = {
+      firmwarePath: "/lib/firmware/rtos.elf",
+      instance: "30070000.remoteproc",
+    };
+
+    const deployed = await service.deploy(
+      {
+        artifact: {
+          configuration: "Debug",
+          contentHash: "not-used-by-the-strategy",
+          path,
+          size: minimalRiscvElf().length,
+          targetName: "rtos_firmware",
+        },
+        attachId: attached.attachId,
+        configuration,
+      }
+    );
+
+    expect(deployed.remotePath).toBe("/lib/firmware/rtos.elf");
+    expect(transport.remoteFile("/lib/firmware/rtos.elf")).toEqual(minimalRiscvElf());
+    expect(await transport.metadata("/lib/firmware/rtos.elf.betelgeuz-prev-1")).not.toBeNull();
+    await expect(
+      service.status({ attachId: attached.attachId, configuration })
+    ).resolves.toMatchObject({ state: "running" });
   });
 });

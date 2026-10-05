@@ -15,6 +15,13 @@ everything else is kept coherent.
 | `README.md` | entry point | links outward; never duplicates content that lives elsewhere |
 | module doc comments | contract summary at each boundary | every module states what it owns and what it forbids; `TODO(Phase X)` markers tie code to plan phases |
 
+The living guides currently are:
+
+| Guide | Answers |
+| --- | --- |
+| `strategy-howto.md` | how the strategy layer is built and how to add a strategy |
+| `remoteproc-setup.md` | how to prepare a target for small-core firmware deploys, with least privilege |
+
 ## Rules
 
 1. **Generated docs are derived, never edited.** If `docs/ERRORS.md` is wrong,

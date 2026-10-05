@@ -5,15 +5,14 @@ import { describe, expect, it } from "vitest";
 import {
   BetelgeuzError,
   COMMON_ERRORS,
-  ERROR_CATALOG,
-  STRATEGY_ERRORS,
   isBetelgeuzError,
   renderErrorCatalog,
 } from "../errors";
+import { RPROC_ERRORS } from "../strategies/remoteproc";
 
 describe("error catalog", () => {
   it("every code is namespaced and its metadata is complete", () => {
-    for (const [code, def] of Object.entries(ERROR_CATALOG)) {
+    for (const [code, def] of Object.entries({ ...COMMON_ERRORS, ...RPROC_ERRORS })) {
       expect(code).toMatch(/^[a-z]+(\.[a-z-]+)+$/);
       expect(def.summary.length).toBeGreaterThan(0);
       expect(def.remediation.length).toBeGreaterThan(0);
@@ -25,7 +24,7 @@ describe("error catalog", () => {
       join(process.cwd(), "docs", "ERRORS.md"),
       "utf8"
     );
-    expect(documented).toBe(renderErrorCatalog());
+    expect(documented).toBe(renderErrorCatalog(RPROC_ERRORS));
   });
 });
 
@@ -37,7 +36,27 @@ describe("BetelgeuzError", () => {
     expect(error.retriable).toBe(true);
     expect(error.remediation).toBe("retry");
     expect(error.detail).toBe("eof");
+    expect(error.summary).toBe(COMMON_ERRORS["ssh.lost"].summary);
     expect(error.message).toContain("ssh.lost");
+  });
+
+  it("carries a strategy-owned definition supplied at construction", () => {
+    const error = new BetelgeuzError("rproc.stop-failed", {
+      definition: RPROC_ERRORS["rproc.stop-failed"],
+      targetState: "running",
+    });
+    expect(error.summary).toBe(RPROC_ERRORS["rproc.stop-failed"].summary);
+    expect(error.phase).toBe("lifecycle");
+    expect(error.retriable).toBe(true);
+    expect(error.targetState).toBe("running");
+  });
+
+  it("refuses a strategy code that arrives without its definition", () => {
+    // The common catalog never learns strategy namespaces, so a strategy code
+    // must come through its owning factory — anything else is a bug.
+    expect(() => new BetelgeuzError("rproc.crashed")).toThrow(
+      /no common error definition/
+    );
   });
 
   it("wrapUnexpected keeps the phase and the cause", () => {
@@ -62,7 +81,7 @@ describe("BetelgeuzError", () => {
   });
 
   it("strategy codes stay namespaced and separate", () => {
-    for (const code of Object.keys(STRATEGY_ERRORS)) {
+    for (const code of Object.keys(RPROC_ERRORS)) {
       expect(code.startsWith("rproc.")).toBe(true);
     }
     expect(Object.keys(COMMON_ERRORS)).not.toContain("rproc.crashed");

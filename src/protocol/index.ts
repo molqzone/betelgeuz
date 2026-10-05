@@ -67,6 +67,9 @@ export type TargetOperation =
 
 export type OutputStream = "stdout" | "stderr";
 
+/** Receives streamed target output while an operation runs. */
+export type OutputListener = (chunk: OutputChunk) => void;
+
 /** The already-built artifact handed to the deploy pipeline. */
 export type ArtifactRecord = {
   configuration?: string | null;
@@ -88,6 +91,27 @@ export type ApplicationConfiguration = {
   runMode?: "foreground" | "service";
   serviceUnit?: string;
   stopGraceMs?: number;
+};
+
+/** How a run the strategy owns ended: an exit status, a terminating signal,
+ *  or neither — an outcome with no fields is an end whose details the strategy
+ *  did not observe, reported as exactly that rather than guessed. */
+export type RunOutcome = {
+  signal?: string;
+  status?: number;
+};
+
+/**
+ * Strategy-reported target state. `state` is strategy-owned vocabulary — the
+ * foreground application strategy reports `exited`/`running`/`stopped`, the
+ * small-core strategy reports the remoteproc lifecycle — rendered as-is by
+ * the surface. `outcome` and `detail` are optional strategy detail: the
+ * process outcome for a foreground run, or the selected firmware.
+ */
+export type StatusResult = {
+  detail?: string;
+  outcome?: RunOutcome;
+  state: string;
 };
 
 /** Fully resolved, validated connection settings. */
@@ -173,10 +197,19 @@ export type ArtifactHandoffResult = {
   accepted: boolean;
 };
 
+/**
+ * Deploys the artifact through the workspace's active strategy.
+ * `configuration` is the strategy-owned settings shape, validated inside the
+ * strategy itself (`unknown` at this boundary: the core never assumes which
+ * strategy is bound). `stopRunningTarget` carries the user's explicit
+ * confirmation for a strategy whose deployment stops a running target — plan
+ * §6: stopping target work always requires explicit user action.
+ */
 export type DeployRequest = {
   artifact: ArtifactRecord;
   attachId: string;
-  configuration: ApplicationConfiguration;
+  configuration: unknown;
+  stopRunningTarget?: boolean;
 };
 
 export type DeployResult = {
@@ -187,18 +220,41 @@ export type DeployResult = {
 
 export type StartRequest = {
   attachId: string;
-  configuration: ApplicationConfiguration;
+  configuration: unknown;
 };
 
 export type StopRequest = {
   attachId: string;
+  configuration: unknown;
   graceMs?: number;
 };
 
 export type RestartRequest = StartRequest;
 
+/** Re-selects the retained previous firmware version and starts the core;
+ *  strategies that retain nothing report the operation unavailable. */
+export type RestorePreviousRequest = {
+  attachId: string;
+  configuration: unknown;
+};
+
+/**
+ * Probes the bound strategy's target interface after attach. Separated from
+ * `attach` so an incompatibility is reported without discarding the attach
+ * (plan §3, Phase 5): the binding survives and the user can switch strategy.
+ */
+export type ValidateStrategyRequest = {
+  attachId: string;
+  configuration: unknown;
+};
+
+export type ValidateStrategyResult = {
+  strategyId: string;
+};
+
 export type StatusRequest = {
   attachId: string;
+  configuration: unknown;
 };
 
 export type OperationResult = {
@@ -207,6 +263,7 @@ export type OperationResult = {
 
 export type LogsParams = {
   attachId: string;
+  configuration: unknown;
   cursor?: string | null;
   maxBytes?: number;
 };

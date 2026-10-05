@@ -1,17 +1,25 @@
 /** VS Code surface: turns commands into core calls and renders state/errors. */
 import * as vscode from "vscode";
 
-import { BetelgeuzError, errorDef, isBetelgeuzError, type Phase } from "../errors";
+import { BetelgeuzError, isBetelgeuzError, type Phase } from "../errors";
 import type {
   AttachResult,
   ConnectionState,
   CredentialMaterial,
   LogsParams,
+  RunOutcome,
+  StatusResult,
 } from "../protocol";
 import { ATTACH_STRATEGY_KEY, TARGET_PROFILE_KEY } from "../protocol";
 import type { SessionLoss } from "../transport";
 import { CoreService } from "../service";
-import type { ApplicationRun, RunOutcome } from "../strategies/ssh-app";
+import type { StrategyRun } from "../strategy";
+import {
+  STRATEGY_REGISTRY,
+  STRATEGY_ROLES,
+  strategyDescriptor,
+  type StrategyDescriptor,
+} from "../strategy";
 import { SshClient } from "../transport/ssh";
 import { clearCredential, loadCredential } from "./credentials";
 import { runReconnect } from "../reconnect";
@@ -24,10 +32,9 @@ import {
 import {
   credentialFor,
   folderConfiguration,
-  readApplicationConfiguration,
   readProfileCatalog,
+  readStrategyConfiguration,
   resolveArtifact,
-  readStrategy,
   readTarget,
   saveHostKey,
 } from "./settings";
@@ -39,7 +46,7 @@ interface WorkspaceRuntime {
   attach?: AttachResult;
   lastVerified?: PersistedAttach;
   lastError?: BetelgeuzError;
-  run?: ApplicationRun;
+  run?: StrategyRun;
   /** Bumped on every user-driven transition (T3): async work carries the
    *  epoch it was issued in, and writes from a stale epoch are dropped. */
   epoch: number;
@@ -53,7 +60,8 @@ interface ProfilePick extends vscode.QuickPickItem {
 }
 
 interface StrategyPick extends vscode.QuickPickItem {
-  id: string;
+  /** Absent on the role separator items, which cannot be picked. */
+  id?: string;
 }
 
 /** Upper bound on pages fetched by one `Logs` command: a target that is still
@@ -181,7 +189,7 @@ export class ExtensionController implements vscode.Disposable {
       vscode.ConfigurationTarget.WorkspaceFolder
     );
     const strategy = await this.chooseStrategy();
-    if (strategy === undefined) {
+    if (strategy?.id === undefined) {
       return;
     }
     await folderConfiguration(folder).update(
@@ -192,21 +200,30 @@ export class ExtensionController implements vscode.Disposable {
     await this.connect(folder);
   }
 
+  /** The strategy picker is generated from the compile-time registry and
+   *  grouped by role (plan §7): the workspace chooses among the strategies
+   *  this Betelgeuz version implements, never a hardcoded list. */
   private async chooseStrategy(): Promise<StrategyPick | undefined> {
-    return await vscode.window.showQuickPick<StrategyPick>(
-      [
-        {
-          label: "Linux application",
-          description: "linux.ssh-app",
-          detail: "Deploy and run a Linux userspace application over SSH",
-          id: "linux.ssh-app",
-        },
-      ],
-      {
-        placeHolder: "Select the deployment strategy for this workspace",
-        matchOnDescription: true,
+    const items: Array<vscode.QuickPickItem> = [];
+    for (const { label, role } of STRATEGY_ROLES) {
+      const entries = STRATEGY_REGISTRY.filter(
+        (entry) => entry.descriptor.role === role
+      ).map((entry) => ({
+        description: entry.descriptor.id,
+        detail: entry.descriptor.detail,
+        id: entry.descriptor.id,
+        label: entry.descriptor.label,
+      }));
+      if (entries.length === 0) {
+        continue;
       }
-    );
+      items.push({ label, kind: vscode.QuickPickItemKind.Separator }, ...entries);
+    }
+    const selected = await vscode.window.showQuickPick<StrategyPick>(items, {
+      placeHolder: "Select the deployment strategy for this workspace",
+      matchOnDescription: true,
+    });
+    return selected;
   }
 
   private async connectSelected(): Promise<void> {
@@ -271,6 +288,7 @@ export class ExtensionController implements vscode.Disposable {
       if (material === undefined) {
         return;
       }
+      const { configuration, strategyId } = readStrategyConfiguration(folder);
       const credentialSecrets = { [credentialRef]: material };
       try {
         const attach = await this.withCancellableProgress(
@@ -281,7 +299,8 @@ export class ExtensionController implements vscode.Disposable {
                 catalog,
                 target,
                 credentialSecrets,
-                strategyId: readStrategy(folder),
+                strategyConfiguration: configuration,
+                strategyId,
               },
               signal
             )
@@ -314,6 +333,7 @@ export class ExtensionController implements vscode.Disposable {
         await vscode.window.showInformationMessage(
           `Betelgeuz connected to ${attach.profile.host}.`
         );
+        await this.validateStrategy(folder, runtime, epoch);
       } finally {
         delete credentialSecrets[credentialRef];
       }
@@ -335,6 +355,38 @@ export class ExtensionController implements vscode.Disposable {
       if (runtime.epoch === epoch) {
         this.refreshStatus();
       }
+    }
+  }
+
+  /**
+   * Probes the bound strategy's target interface after the attach bound
+   * (Phase 5). An incompatibility is reported with the remedy the catalog
+   * names, but the attach survives it: the binding holds and the user can
+   * pick another strategy instead of re-running the identity handshake.
+   */
+  private async validateStrategy(
+    folder: vscode.WorkspaceFolder,
+    runtime: WorkspaceRuntime,
+    epoch: number
+  ): Promise<void> {
+    const attach = runtime.attach;
+    if (attach === undefined) {
+      return;
+    }
+    try {
+      const { configuration, strategyId } = readStrategyConfiguration(folder);
+      await runtime.core.validateStrategy({ attachId: attach.attachId, configuration });
+      this.log(`Strategy ${strategyId} validated against the target`);
+    } catch (error) {
+      if (runtime.epoch !== epoch) {
+        return;
+      }
+      const structured = isBetelgeuzError(error)
+        ? error
+        : BetelgeuzError.wrapUnexpected("inspect", error);
+      runtime.lastError = structured;
+      this.refreshStatus();
+      await this.showFailure(structured, "inspect");
     }
   }
 
@@ -394,17 +446,56 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.requireAttached(folder);
+    const attachId = runtime.attach?.attachId as string;
+    const { configuration, strategyId } = readStrategyConfiguration(folder);
+    const descriptor = strategyDescriptor(strategyId);
+    // A strategy whose deploy stops a running target needs the plan's explicit
+    // confirmation (§6: stopping target work always requires user action), so
+    // the current state is asked for and a decline cancels the deploy.
+    const stopRunningTarget = descriptor?.stopsTargetToDeploy === true
+      ? await this.confirmStopToDeploy(runtime, attachId, configuration, descriptor)
+      : false;
+    if (stopRunningTarget === "declined") {
+      return;
+    }
     const artifact = await resolveArtifact(folder, this.context.workspaceState);
-    const configuration = readApplicationConfiguration(folder);
     const result = await this.withCancellableProgress(
       `Deploying ${artifact.targetName}`,
       (signal) => runtime.core.deploy(
-        { attachId: runtime.attach?.attachId as string, artifact, configuration },
+        {
+          attachId,
+          artifact,
+          configuration,
+          ...(stopRunningTarget === true ? { stopRunningTarget: true } : {}),
+        },
         signal
       )
     );
     this.log(`Deployed ${artifact.path} to ${result.remotePath}`);
-    await vscode.window.showInformationMessage(`Betelgeuz deployed ${result.remotePath}.`);
+    await vscode.window.showInformationMessage(
+      `Betelgeuz deployed ${result.remotePath} with ${descriptor?.label ?? strategyId}.`
+    );
+  }
+
+  /** Asks whether a running target may be stopped to deploy. Returns
+   *  `false` when the target is already stopped and `"declined"` when the
+   *  user cancels — the caller must not deploy in that case. */
+  private async confirmStopToDeploy(
+    runtime: WorkspaceRuntime,
+    attachId: string,
+    configuration: unknown,
+    descriptor: StrategyDescriptor
+  ): Promise<boolean | "declined"> {
+    const status = await runtime.core.status({ attachId, configuration });
+    if (status.state === "stopped") {
+      return false;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      `The ${descriptor.label} target is ${status.state} and will be stopped to deploy.`,
+      { modal: true },
+      "Stop and Deploy"
+    );
+    return answer === "Stop and Deploy" ? true : "declined";
   }
 
   private async startSelected(): Promise<void> {
@@ -413,9 +504,9 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.requireAttached(folder);
-    const configuration = readApplicationConfiguration(folder);
+    const { configuration, strategyId } = readStrategyConfiguration(folder);
     const run = await this.withCancellableProgress(
-      "Starting target application",
+      `Starting ${strategyDescriptor(strategyId)?.label ?? "target"}`,
       (signal) => runtime.core.start(
         {
           attachId: runtime.attach?.attachId as string,
@@ -426,7 +517,7 @@ export class ExtensionController implements vscode.Disposable {
       )
     );
     runtime.run = run;
-    this.log(`Started target application (${run.runId})`);
+    this.log(`Started ${strategyDescriptor(strategyId)?.label ?? "target"} (${run.runId})`);
     this.trackRun(runtime, run);
   }
 
@@ -436,12 +527,15 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.requireAttached(folder);
+    const { configuration, strategyId } = readStrategyConfiguration(folder);
     const outcome = await runtime.core.stop({
       attachId: runtime.attach?.attachId as string,
+      configuration,
       graceMs: 5_000,
     });
     runtime.run = undefined;
-    this.log(`Stopped target application${outcome?.signal === undefined ? "" : ` by ${outcome.signal}`}`);
+    const label = strategyDescriptor(strategyId)?.label ?? "target";
+    this.log(`Stopped ${label}${outcome?.signal === undefined ? "" : ` by ${outcome.signal}`}`);
     this.refreshStatus();
   }
 
@@ -451,7 +545,7 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.requireAttached(folder);
-    const configuration = readApplicationConfiguration(folder);
+    const { configuration, strategyId } = readStrategyConfiguration(folder);
     const run = await runtime.core.restart(
       {
         attachId: runtime.attach?.attachId as string,
@@ -460,19 +554,21 @@ export class ExtensionController implements vscode.Disposable {
       (chunk) => this.logOutput(chunk.stream, chunk.bytes)
     );
     runtime.run = run;
-    this.log(`Restarted target application (${run.runId})`);
+    this.log(`Restarted ${strategyDescriptor(strategyId)?.label ?? "target"} (${run.runId})`);
     this.trackRun(runtime, run);
   }
 
   /** Watches a run to its end: an unobserved `completion` would surface a run
    * failure as an unhandled rejection and leave stale state in the runtime. */
-  private trackRun(runtime: WorkspaceRuntime, run: ApplicationRun): void {
+  private trackRun(runtime: WorkspaceRuntime, run: StrategyRun): void {
     void run.completion.then((outcome) => {
       if (runtime.run === run) {
         runtime.run = undefined;
       }
+      // An outcome without fields is a strategy that reports no process
+      // outcome — the small core has none — so nothing is claimed for it.
       this.log(
-        `Target application exited${outcome.status === undefined ? "" : ` with status ${outcome.status}`}${outcome.signal === undefined ? "" : ` by ${outcome.signal}`}`
+        `Target run finished${outcome.status === undefined ? "" : ` with status ${outcome.status}`}${outcome.signal === undefined ? "" : ` by ${outcome.signal}`}`
       );
       this.refreshStatus();
     }).catch((error: unknown) => {
@@ -490,12 +586,17 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const runtime = this.requireAttached(folder);
-    const status = await runtime.core.status({
+    const { configuration, strategyId } = readStrategyConfiguration(folder);
+    const descriptor = strategyDescriptor(strategyId);
+    const status: StatusResult = await runtime.core.status({
       attachId: runtime.attach?.attachId as string,
+      configuration,
     });
-    this.log(`Target application status: ${status.state}`);
+    const label = descriptor?.label ?? "target";
+    const detail = status.detail === undefined ? "" : ` (${status.detail})`;
+    this.log(`Target status: ${status.state}${detail}`);
     await vscode.window.showInformationMessage(
-      `Betelgeuz target application: ${status.state}.`
+      `Betelgeuz ${label}: ${status.state}.`
     );
   }
 
@@ -506,12 +607,13 @@ export class ExtensionController implements vscode.Disposable {
     }
     const runtime = this.requireAttached(folder);
     const attachId = runtime.attach?.attachId as string;
+    const { configuration } = readStrategyConfiguration(folder);
     let cursor: string | null | undefined;
     for (let page = 0; page < MAX_LOG_PAGES; page += 1) {
       const params: LogsParams = cursor === undefined || cursor === null
-        ? { attachId }
-        : { attachId, cursor };
-      const result = runtime.core.logs(params);
+        ? { attachId, configuration }
+        : { attachId, configuration, cursor };
+      const result = await runtime.core.logs(params);
       for (const chunk of result.chunks) {
         this.logOutput(chunk.stream, Uint8Array.from(chunk.bytes));
       }
@@ -706,7 +808,8 @@ export class ExtensionController implements vscode.Disposable {
   }
 
   /** Re-queries the target after a reconnect and reports what became of the
-   *  foreground run while the channel was gone. */
+   *  run while the channel was gone — through the bound strategy, whose
+   *  `inspect` is the source of truth after a reconnect (plan §6). */
   private async restoreTargetState(
     folder: vscode.WorkspaceFolder,
     runtime: WorkspaceRuntime,
@@ -717,14 +820,15 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     try {
-      const status = await runtime.core.status({ attachId: attach.attachId });
+      const { configuration } = readStrategyConfiguration(folder);
+      const status = await runtime.core.status({ attachId: attach.attachId, configuration });
       if (runtime.epoch !== epoch) {
         return;
       }
       const detail = status.outcome === undefined
         ? ""
         : ` (${describeOutcome(status.outcome)})`;
-      this.log(`Target application: ${status.state}${detail}`);
+      this.log(`Target state after reconnect: ${status.state}${detail}`);
     } catch (error) {
       if (runtime.epoch !== epoch) {
         return;
@@ -778,7 +882,7 @@ export class ExtensionController implements vscode.Disposable {
       : `${profile.username}@${profile.host}:${profile.port} - ${strategy ?? "unknown strategy"}`;
     this.status.tooltip = runtime?.lastError === undefined
       ? location
-      : `${location}\n${errorDef(runtime.lastError.code).summary}`;
+      : `${location}\n${runtime.lastError.summary}`;
     this.status.command = state === "attached"
       ? "betelgeuz.disconnect"
       : folder === undefined
@@ -797,7 +901,7 @@ export class ExtensionController implements vscode.Disposable {
       return;
     }
     const action = await vscode.window.showErrorMessage(
-      `Betelgeuz: ${errorDef(structured.code).summary}`,
+      `Betelgeuz: ${structured.summary}`,
       "Open Settings",
       "View Output"
     );
@@ -810,9 +914,8 @@ export class ExtensionController implements vscode.Disposable {
 
   private logFailure(error: unknown, phase: Phase): void {
     if (isBetelgeuzError(error)) {
-      const summary = errorDef(error.code).summary;
       const context = [error.detail, error.causeText].filter(Boolean).join("\n");
-      this.log(`[${phase}] ${error.code}: ${summary}${context ? `\n${context}` : ""}`);
+      this.log(`[${phase}] ${error.code}: ${error.summary}${context ? `\n${context}` : ""}`);
       return;
     }
     this.log(`[${phase}] unexpected failure: ${errorText(error)}`);

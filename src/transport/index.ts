@@ -99,6 +99,15 @@ export interface LaunchRequest {
  * its own session and process group — the group a channel signal addresses —
  * whereas `setsid` would fork the program into a grandchild the channel can
  * neither report nor signal.
+ *
+ * The `*Remoteproc*` templates address the Linux `remoteproc` sysfs interface
+ * for the small-core strategy. Every one of them resolves the configured
+ * instance by its stable `name` through the same fixed loop, so the only value
+ * ever encoded into the command line is the instance name itself; the
+ * directory a command writes to is discovered from the target, never rendered
+ * from configuration. A control write echoes the written value on success,
+ * prints `instance-missing` when the loop matches nothing, and exits non-zero
+ * when the write itself failed.
  */
 export type FixedCommand =
   | { kind: "readHardwareDescriptor" }
@@ -106,7 +115,23 @@ export type FixedCommand =
   | { kind: "makeDirectory"; directory: string }
   | { kind: "preflightDestination"; directory: string }
   | { kind: "probeProcess"; pid: number }
-  | { kind: "signalProcessGroup"; pid: number; signal: "TERM" | "KILL" };
+  | { kind: "signalProcessGroup"; pid: number; signal: "TERM" | "KILL" }
+  | { kind: "readRemoteprocInstances" }
+  | { kind: "probePasswordlessSudo"; attribute: string }
+  | { kind: "readRemoteprocTrace"; instance: string }
+  | { kind: "readKernelLogTail" }
+  | {
+      kind: "writeRemoteprocState";
+      instance: string;
+      value: "start" | "stop";
+      privileged: boolean;
+    }
+  | {
+      kind: "writeRemoteprocFirmware";
+      instance: string;
+      firmware: string;
+      privileged: boolean;
+    };
 
 /** The launcher's identity marker: the first stdout line of every launched
  *  command reports the pid the exec'd program will have (`$$` survives
@@ -196,6 +221,60 @@ export class ExecRequest {
           `kill -s ${template.signal} -- -${template.pid}`,
           false
         );
+      case "readRemoteprocInstances":
+        // One line per instance: directory, stable name, state, selected
+        // firmware, and whether this account can write the controls directly.
+        return new ExecRequest(
+          `for d in /sys/class/remoteproc/remoteproc*; do test -d "$d" || continue; n=$(cat "$d/name" 2>/dev/null); s=$(cat "$d/state" 2>/dev/null); f=$(cat "$d/firmware" 2>/dev/null); w=no; test -w "$d/state" && w=yes; printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$d" "$n" "$s" "$f" "$w"; done`,
+          false
+        );
+      case "probePasswordlessSudo":
+        // Asks whether the account may run the whitelisted control write
+        // itself, so a probe never needs a command the whitelist does not
+        // grant — and never writes anything to find out.
+        rejectNul("attribute", template.attribute);
+        if (!template.attribute.startsWith("/")) {
+          throw new BetelgeuzError("config.invalid", {
+            detail: "remoteproc control attribute must be an absolute sysfs path",
+          });
+        }
+        return new ExecRequest(
+          `sudo -n -l /usr/bin/tee ${shellQuote(template.attribute)}`,
+          false
+        );
+      case "readRemoteprocTrace":
+        rejectNul("instance", template.instance);
+        requireInstanceName(template.instance);
+        return new ExecRequest(
+          `for d in /sys/class/remoteproc/remoteproc*; do test -d "$d" || continue; test "$(cat "$d/name" 2>/dev/null)" = ${shellQuote(template.instance)} || continue; cat "/sys/kernel/debug/remoteproc/\${d##*/}/trace0" 2>/dev/null; break; done`,
+          false
+        );
+      case "readKernelLogTail":
+        // The crash diagnostic for the small-core strategy: bounded to the
+        // tail, and a failure here is never allowed to mask the crash itself.
+        return new ExecRequest(
+          `dmesg 2>/dev/null | tail -n 40`,
+          false
+        );
+      case "writeRemoteprocState":
+      case "writeRemoteprocFirmware": {
+        rejectNul("instance", template.instance);
+        requireInstanceName(template.instance);
+        const attribute = template.kind === "writeRemoteprocState" ? "state" : "firmware";
+        const value = template.kind === "writeRemoteprocState"
+          ? shellQuote(template.value)
+          : shellQuote(template.firmware);
+        const writer = template.privileged ? "sudo -n tee" : "tee";
+        // `tee` keeps the redirect inside the privileged command, so the
+        // whitelist entry is one fixed path per attribute instead of a shell.
+        // The caller reads three outcomes off stdout and the exit status: the
+        // echoed value means written, `instance-missing` means the loop found
+        // nothing, and a non-zero exit means the write itself failed.
+        return new ExecRequest(
+          `for d in /sys/class/remoteproc/remoteproc*; do test -d "$d" || continue; if test "$(cat "$d/name" 2>/dev/null)" = ${shellQuote(template.instance)}; then printf '%s\\n' ${value} | ${writer} "$d/${attribute}" && exit 0; exit 1; fi; done; printf 'instance-missing\\n'`,
+          false
+        );
+      }
     }
   }
 }
@@ -206,6 +285,19 @@ function requirePid(pid: number): void {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
     throw new BetelgeuzError("config.invalid", {
       detail: "pid must be a positive integer",
+    });
+  }
+}
+
+/** A remoteproc instance is a sysfs name (`30070000.remoteproc`, stable per
+ *  device tree) or the `remoteprocN` index convenience. Anything outside that
+ *  shape — paths, whitespace, shell metacharacters — is refused here even
+ *  though the encoder would quote it, because it names a kernel interface,
+ *  not a user string. */
+function requireInstanceName(instance: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(instance)) {
+    throw new BetelgeuzError("config.invalid", {
+      detail: "remoteproc instance must be a sysfs name or a remoteprocN index",
     });
   }
 }

@@ -17,7 +17,23 @@ import {
   waitForApplicationState,
 } from "./helpers";
 
-suite("betelgeuz surface commands", () => {
+/** The ordinary surface suite is the plain manual artifact run. A special
+ *  run — the session drop, the CMake source, or the small-core firmware —
+ *  carries its own workspace settings and its own suite, so this one steps
+ *  aside rather than deploying a workspace it does not describe. */
+const SPECIAL_RUN =
+  process.env.BETELGEUZ_TEST_DROP === "1" ||
+  process.env.BETELGEUZ_TEST_CMAKE === "1" ||
+  process.env.BETELGEUZ_TEST_RPROC === "1";
+
+if (SPECIAL_RUN) {
+  suite("betelgeuz surface commands", function () {
+    test("needs a plain manual run (no BETELGEUZ_TEST_DROP/CMAKE/RPROC)", function () {
+      this.skip();
+    });
+  });
+} else {
+  suite("betelgeuz surface commands", () => {
   // One clean slate per suite: the later tests run the artifact this suite
   // deploys, so a per-test setup must not delete it.
   suiteSetup(async () => {
@@ -66,3 +82,4 @@ suite("betelgeuz surface commands", () => {
     assert.equal(await onBoard(["/usr/bin/pgrep", "-af", "betelgeuz-e2e"]), "");
   });
 });
+}

@@ -36,7 +36,7 @@ target.
 
 ### Follow-on capability area
 
-- Add the `linux.remoteproc` deploy strategy for small-core firmware workspaces whose target exposes the standard interface. It is introduced in Phase 3. Vendor small-core control mechanisms, including Rockchip mailbox control and the Canaan K230 loader, are future strategies behind the same contract.
+- Add the `linux.remoteproc` deploy strategy for small-core firmware workspaces whose target exposes the standard interface. It is introduced in Phase 5. Vendor small-core control mechanisms, including Rockchip mailbox control and the Canaan K230 loader, are future strategies behind the same contract.
 - Keep strategy-specific configuration and target validation inside each strategy.
 - Reuse the same build-artifact-to-attach workflow for application and firmware projects, each deploying its own artifact.
 - Add a serial-console transport as a peer of the SSH transport, staged: **S1** attaches a serial console as a read-only log and descriptor source, driving login and prompt handling without mutations; **S2** adds deploy, structured exec, and lifecycle over the console shell, with file transfer through base64 staging or ZMODEM. Library choice: the `serialport` npm package (the mature cross-platform option with honest Windows support, pinned at implementation time) with a per-port reader bridged into the event layer — serial bandwidth does not warrant anything fancier. The console driver itself (login and prompt matching, echo suppression, timeouts) and explicit DTR/RTS control — opening a port must not reset the board — are ours to write and are the least robust part of the system by nature. Its arrival is the rule-of-two trigger to widen the transport interface (`SshTransport` → `TargetTransport`, endpoint and pin shapes as discriminated unions); serial attach identity is the documented downgrade described under target resolution.
@@ -418,7 +418,7 @@ Small-core firmware workspaces are served by a deploy strategy behind the common
 3. Inspect the configured `remoteproc` instance and confirm its resolved identity, current state, and selected firmware.
 4. Upload to a staging file inside the firmware search path, on the same filesystem as the firmware location, while the core keeps running; this stage is fully reversible.
 5. Stop the core if it is running, following the profile's policy and requiring explicit confirmation when stopping may interrupt active work.
-6. Move the staged file into the configured firmware location — the commit point — then select it through the `firmware` attribute.
+6. Move the staged file into the configured firmware location — the commit point — then select it through the `firmware` attribute. That attribute takes a firmware *name* the kernel's loader resolves through its search paths, not a path: a Tier 1 board rejects a slashed value outright (`Direct firmware load ... failed with error -2`), so the staged file lives where the loader searches (`/lib/firmware` by default) and its name is selected. The attribute also refuses a write while the core runs (`Device or resource busy`), which is why the stop precedes the selection.
 7. Start the core and wait for the state transition with a configurable timeout and a short poll interval. `running` is success, `crashed` is failure, and a timeout reports the last observed state without guessing.
 8. Surface trace/output and errors when the kernel exposes them.
 
@@ -580,6 +580,43 @@ scripted under the same gate.
 - Implement the `linux.remoteproc` deploy strategy: firmware upload, selection, stop/start, state reporting, and failure recovery.
 - Publish the least-privilege target setup for firmware management: the root-SSH mode and the documented `NOPASSWD` sudo whitelist, with all privileged commands as fixed templates.
 
+Implementation status: the strategy layer now has its second implementation, so the compile-time
+registry and the `DeployStrategy` contract exist (`src/strategy.ts`): the picker offers both peers
+grouped by role, and the core routes every verb through the bound strategy instead of branching on
+an ID. `linux.remoteproc` implements the plan's pipeline — the configured instance is resolved by
+its stable `name` (the `remoteprocN` index convenience resolves to a name at bind time and is
+re-validated on every reconnect, a changed or ambiguous name being `identity.instance-changed`),
+the firmware is staged on the firmware filesystem while the core keeps running, a running core is
+stopped only after the surface's explicit confirmation, activation is an atomic move plus a
+`firmware` selection with retention bounded to three images and 64 MiB, and the start waits on the
+state the target reports — `crashed` carries the kernel log tail, a timeout carries the last
+observed state, and a `running` state is presented as execution state, not firmware health. The
+privilege mode is discovered rather than configured: direct writes when the account may, otherwise
+the published passwordless sudo whitelist probed by asking about the whitelisted control write
+itself (never a command the whitelist does not grant), and `privilege.denied` when
+neither is available. Attach binds on identity only; the strategy's interface probe runs afterwards
+and reports `strategy.unsupported-target` or its own `rproc.*` codes without discarding the attach.
+The `rproc.*` definitions moved into the strategy module (plan §6's ownership rule), with
+`docs/ERRORS.md` regenerated and unchanged in content. The target setup is published in
+`docs/dev/remoteproc-setup.md`. Unit coverage runs every path through the fake transport's
+remoteproc simulator (supported, unsupported, busy, interrupted upload, failed stop, crash,
+timeout, privilege fallback, re-target), and the service layer covers routing, the surviving attach,
+and revalidation. Hardware acceptance has run twice over: directly against the board (SG2002 image,
+kernel 5.10) through the strategy's own transport, and end to end through the extension host
+(`test/suite/rproc.test.ts`, registered under `BETELGEUZ_TEST_RPROC=1`) — host-key enrollment, the
+post-bind interface probe, a firmware deploy with the stop confirmation, the lifecycle verbs,
+restore, and a disconnect that leaves the core running all passed, with the board itself as the
+assertion. The run confirmed the pipeline's assumptions on the real kernel — the instance resolves
+as `cv181x-c906_1` from its device-tree name, control writes succeed only through the published
+sudo whitelist, `running` is what the target reports — and found three defects unit tests could
+not: the privilege probe asked for a command the whitelist never grants (`sudo -n true` instead of
+asking about the whitelisted write), the firmware selection wrote a path where the kernel takes a
+name, and `restore`/`stop`/`start` were not idempotent against a core already in the requested
+state. All three are fixed, and the setup document now carries the group and writable-firmware
+steps the board required. Outstanding: the artifact must be an ELF image (no raw-binary format key
+declared yet), and restore is re-select-and-start — Linux `remoteproc` has no universal rollback
+mechanism.
+
 ### Phase 6: Debug integrations
 
 - Define the host-centric debug-provider contract and its temporary endpoint lifecycle.
@@ -724,7 +761,7 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Configuration model: two layers — a shareable user-level `betelgeuz.profiles` entry holding the direct SSH endpoint, credential reference, and identity pins, and workspace-scoped `betelgeuz.attach.*` / `betelgeuz.deploy.*` keys. The key list is owned by the config module (`src/protocol/config`); implemented strategy keys use the full strategy ID as their prefix. The first small-core strategy uses `betelgeuz.attach.linux.remoteproc.instance` and `betelgeuz.attach.linux.remoteproc.firmwarePath`.
 - Artifact and firmware validation: host-side format and architecture checks (ELF header parsing or a declared raw binary), with the instance identified by its `name` and the target profile pins; ELF metadata and declared format/size checks only — a board-provided manifest is deferred.
 - Artifact selection: no staleness detection — Deploy consumes the build owner's output as-is. The MVP applies the exactly-one rule per target and fails multi-artifact targets with `artifact.ambiguous`; multi-artifact selection through `betelgeuz.deploy.artifact` is scheduled for Phase 7 (Optimization).
-- Privilege model: a root SSH account or the documented `NOPASSWD` sudo whitelist Betelgeuz publishes; privileged commands are fixed templates with no interpolated user input. A target-side helper remains deferred behind a privilege runner seam.
+- Privilege model: a root SSH account or the documented `NOPASSWD` sudo whitelist Betelgeuz publishes; privileged commands are fixed templates with no interpolated user input. The mode is discovered at connect time — direct writes when the account may, otherwise the whitelist probed by asking about the whitelisted control write itself — so no per-workspace privilege setting exists. A target-side helper remains deferred behind a privilege runner seam.
 - Support tier: Lichee RVNano is the sole Tier 1 board; all other board families are future support targets.
 - Strategy model: deploy strategies are peers in a compile-time registry with declarative metadata (ID, role, config schema, error-code namespace, privilege class, and validation entry points). The user selects among implemented strategies; attach creation depends on SSH identity verification only, and target compatibility is checked afterward by the selected strategy. All strategies share the core's SSH session.
 - Linux userspace runtime: the MVP accepts structured foreground launches with an executable,

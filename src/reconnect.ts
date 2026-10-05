@@ -14,7 +14,7 @@
  * the retries by aborting the signal.
  */
 import { throwIfAborted } from "./cancellation";
-import { BetelgeuzError, errorDef } from "./errors";
+import { BetelgeuzError } from "./errors";
 
 /** Total attempts, including the first one (which runs immediately). */
 export const RECONNECT_MAX_ATTEMPTS = 5;
@@ -85,7 +85,7 @@ export async function runReconnect<T>(
           ? error
           : BetelgeuzError.wrapUnexpected("connect", error);
       const spent = retry + 1 >= RECONNECT_MAX_ATTEMPTS;
-      if (!errorDef(failure.code).retriable || spent) {
+      if (!failure.retriable || spent) {
         throw failure;
       }
       const delayMs = reconnectDelayMs(retry + 1);

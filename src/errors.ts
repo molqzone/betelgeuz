@@ -3,13 +3,16 @@
  *
  * Core modules fail with `BetelgeuzError` values and never with free-form
  * user-facing text; the UI maps the catalog code to a uniform message and one
- * remediation action. `docs/ERRORS.md` is generated from this catalog
- * (`npm run gen:errors`) and is never hand-edited.
+ * remediation action. `docs/ERRORS.md` is generated from this catalog and the
+ * strategy-owned catalogs (`npm run gen:errors`) and is never hand-edited.
  *
- * Strategy-owned codes (`rproc.*`) live in their own block: by plan each
- * strategy owns its namespaced definitions. TODO(Phase 3): they move into the
- * strategy module when it lands.
+ * This module owns the common core codes and the error type. Each strategy
+ * owns the definitions for its namespaced codes (plan §6: `rproc.*` lives in
+ * `src/strategies/remoteproc.ts`) and constructs them through its own factory,
+ * which passes the definition in — the common catalog never needs to know a
+ * strategy's namespace, so the dependency stays one-way.
  */
+import type { RemoteprocErrorCode } from "./strategies/remoteproc";
 
 export type Phase =
   | "profile"
@@ -265,46 +268,17 @@ export const COMMON_ERRORS = {
   },
 } as const satisfies Record<string, ErrorDef>;
 
-/** Strategy-owned codes; TODO(Phase 3): move into the strategy module. */
-export const STRATEGY_ERRORS = {
-  "rproc.instance-missing": {
-    phase: "lifecycle",
-    retriable: false,
-    remediation: "selectSupportedStrategy",
-    summary:
-      "The board exposes no supported small-core control interface for the configured core.",
-  },
-  "rproc.stop-failed": {
-    phase: "lifecycle",
-    retriable: true,
-    remediation: "retry",
-    summary: "Stopping the small core failed; the deployed firmware is untouched.",
-  },
-  "rproc.crashed": {
-    phase: "lifecycle",
-    retriable: false,
-    remediation: "restorePreviousVersion",
-    summary:
-      "The small core entered the crashed state; carries the kernel log tail when readable.",
-  },
-  "rproc.state-timeout": {
-    phase: "lifecycle",
-    retriable: true,
-    remediation: "inspectTrace",
-    summary:
-      "Timed out waiting for the core state transition; carries the last observed state.",
-  },
-} as const satisfies Record<string, ErrorDef>;
+export type ErrorCode = keyof typeof COMMON_ERRORS | RemoteprocErrorCode;
 
-export type ErrorCode = keyof typeof COMMON_ERRORS | keyof typeof STRATEGY_ERRORS;
-
-export const ERROR_CATALOG: Record<ErrorCode, ErrorDef> = {
-  ...COMMON_ERRORS,
-  ...STRATEGY_ERRORS,
-};
-
+/** The definition of a common core code. Strategy-owned codes resolve from
+ *  their own catalog, passed to the constructor by the owning strategy's
+ *  factory — an unknown code here is a programmer error, never a fallback. */
 export function errorDef(code: ErrorCode): ErrorDef {
-  return ERROR_CATALOG[code];
+  const def = COMMON_ERRORS[code as keyof typeof COMMON_ERRORS];
+  if (def === undefined) {
+    throw new Error(`invariant violated: ${code} has no common error definition`);
+  }
+  return def;
 }
 
 export interface BetelgeuzErrorContext {
@@ -316,6 +290,10 @@ export interface BetelgeuzErrorContext {
   detail?: string;
   /** Overrides the catalog phase; used by `internal.unexpected`. */
   phase?: Phase;
+  /** The definition of a strategy-owned code, supplied by the owning
+   *  strategy's factory so the common catalog never learns strategy
+   *  namespaces. Common codes resolve from this module's own catalog. */
+  definition?: ErrorDef;
 }
 
 /** A structured failure. The UI renders from `code`; the rest is context. */
@@ -324,12 +302,15 @@ export class BetelgeuzError extends Error {
   readonly phase: Phase;
   readonly retriable: boolean;
   readonly remediation: RemediationId;
+  /** The catalog summary, carried by the instance so renderers never need a
+   *  catalog lookup — a strategy code renders from its own definition. */
+  readonly summary: string;
   readonly targetState?: string;
   readonly detail?: string;
   readonly causeText?: string;
 
   constructor(code: ErrorCode, context: BetelgeuzErrorContext = {}) {
-    const def = errorDef(code);
+    const def = context.definition ?? errorDef(code);
     const detail = context.detail ? ` [${context.detail}]` : "";
     super(`betelgeuz.${code}: ${def.summary}${detail}`);
     this.name = "BetelgeuzError";
@@ -343,6 +324,7 @@ export class BetelgeuzError extends Error {
     this.phase = phase;
     this.retriable = def.retriable;
     this.remediation = def.remediation;
+    this.summary = def.summary;
     this.targetState = context.targetState;
     this.detail = context.detail;
     this.causeText = context.cause === undefined ? undefined : describeCause(context.cause);
@@ -373,11 +355,14 @@ function describeCause(cause: unknown): string {
   }
 }
 
-/** Renders the `docs/ERRORS.md` body from the catalog. */
-export function renderErrorCatalog(): string {
+/** Renders the `docs/ERRORS.md` body from the common catalog plus each
+ *  strategy's own catalog, in registry order. */
+export function renderErrorCatalog(
+  ...strategyCatalogs: Array<Record<string, ErrorDef>>
+): string {
   const blocks: Array<[string, ErrorDef]> = [
     ...Object.entries(COMMON_ERRORS),
-    ...Object.entries(STRATEGY_ERRORS),
+    ...strategyCatalogs.flatMap((catalog) => Object.entries(catalog)),
   ];
   let out = "# Error catalog\n\n";
   out +=

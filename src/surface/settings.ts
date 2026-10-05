@@ -1,12 +1,15 @@
 /** VS Code configuration adapter for typed core profile inputs. */
 import * as vscode from "vscode";
+
 import { BetelgeuzError } from "../errors";
 import { resolveArtifactFile } from "../artifact/path";
 import { readArtifactRecord as readArtifactFile } from "../artifact/record";
 import { readRememberedArtifact, rememberArtifact } from "./artifact-memory";
+import { strategyDescriptor, STRATEGY_REGISTRY } from "../strategy";
 import type {
   ApplicationConfiguration,
   ArtifactRecord,
+  LinuxRemoteprocConfiguration,
   ProfileCatalog,
   ProxyHopProfile,
   TargetOverrides,
@@ -19,6 +22,7 @@ import {
   DEPLOY_SOURCES,
   PROFILES_KEY,
   resolveArtifactPath,
+  strategyKey,
   TARGET_INLINE_PREFIX,
   TARGET_PROFILE_KEY,
   DEPLOY_ARGS_KEY,
@@ -34,7 +38,6 @@ import {
 } from "../protocol";
 import { isBetelgeuzError } from "../errors";
 import { listCmakeTargets, readCmakeArtifact } from "./cmake";
-
 export function readProfileCatalog(): ProfileCatalog {
   const value = vscode.workspace.getConfiguration().get<unknown>(PROFILES_KEY, {});
   if (!isRecord(value)) {
@@ -70,12 +73,56 @@ export function readTarget(folder: vscode.WorkspaceFolder): TargetOverrides {
   };
 }
 
+/** The workspace's strategy, defaulting to the application strategy. An ID
+ *  this Betelgeuz version does not implement is a settings error, not a
+ *  silent fallback. */
 export function readStrategy(folder: vscode.WorkspaceFolder): string {
   const value = optionalString(
     folderConfiguration(folder).get<unknown>(ATTACH_STRATEGY_KEY),
     ATTACH_STRATEGY_KEY
   );
-  return value?.trim() || "linux.ssh-app";
+  const strategyId = value?.trim() || "linux.ssh-app";
+  if (strategyDescriptor(strategyId) === undefined) {
+    const implemented = STRATEGY_REGISTRY.map((entry) => entry.descriptor.id).join(", ");
+    throw invalidSetting(
+      ATTACH_STRATEGY_KEY,
+      `must name an implemented strategy (${implemented})`
+    );
+  }
+  return strategyId;
+}
+
+/** The settings of the small-core strategy: the configured instance and the
+ *  firmware location. Both are required — an unset one is a settings error
+ *  rather than a guess at the target. */
+export function readRemoteprocConfiguration(
+  folder: vscode.WorkspaceFolder
+): LinuxRemoteprocConfiguration {
+  const config = folderConfiguration(folder);
+  return {
+    firmwarePath: requiredString(
+      config.get<unknown>(strategyKey("linux.remoteproc", "firmwarePath")),
+      strategyKey("linux.remoteproc", "firmwarePath")
+    ),
+    instance: requiredString(
+      config.get<unknown>(strategyKey("linux.remoteproc", "instance")),
+      strategyKey("linux.remoteproc", "instance")
+    ),
+  };
+}
+
+/** Reads the active strategy together with its own configuration, so every
+ *  command hands the strategy exactly the settings it owns. */
+export function readStrategyConfiguration(
+  folder: vscode.WorkspaceFolder
+): { configuration: unknown; strategyId: string } {
+  const strategyId = readStrategy(folder);
+  return {
+    configuration: strategyId === "linux.remoteproc"
+      ? readRemoteprocConfiguration(folder)
+      : readApplicationConfiguration(folder),
+    strategyId,
+  };
 }
 
 /** Reads the Phase 1 manual artifact and structured application settings. */

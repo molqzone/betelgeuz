@@ -26,6 +26,16 @@ import {
 
 const DEFAULT_HOST_KEY = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+/** One simulated remoteproc instance: the sysfs attributes the control
+ *  templates read and write, plus whether this account may write them. */
+type FakeRemoteprocInstance = {
+  directory: string;
+  firmware: string;
+  name: string;
+  state: string;
+  writable: boolean;
+};
+
 export class FakeSshTransport implements SshTransport {
   private hostKey = HostKeyFingerprint.parse(DEFAULT_HOST_KEY);
   private connectFailure = false;
@@ -38,6 +48,11 @@ export class FakeSshTransport implements SshTransport {
    *  process group ends them unless a test says otherwise. */
   private readonly processes = new Set<number>();
   private killable = true;
+  /** The simulated Linux remoteproc instances (empty: no small-core
+   *  interface, which is itself a supported target state). */
+  private remoteprocInstances: Array<FakeRemoteprocInstance> = [];
+  /** Whether the fake account holds a passwordless sudo whitelist entry. */
+  private passwordlessSudo = false;
 
   setHostKey(hostKey: HostKeyFingerprint): void {
     this.hostKey = hostKey;
@@ -51,6 +66,31 @@ export class FakeSshTransport implements SshTransport {
   /** Makes signalling a no-op, for processes that outlive SIGKILL. */
   setProcessUnkillable(): void {
     this.killable = false;
+  }
+
+  /** The simulated remoteproc instances. Index `i` gets directory
+   *  `/sys/class/remoteproc/remoteproc${i}`; absent fields default to an
+   *  offline, firmware-less, directly writable instance. */
+  setRemoteprocInstances(
+    instances: ReadonlyArray<{
+      name: string;
+      state?: string;
+      firmware?: string;
+      writable?: boolean;
+    }>
+  ): void {
+    this.remoteprocInstances = instances.map((instance, index) => ({
+      directory: `/sys/class/remoteproc/remoteproc${index}`,
+      firmware: instance.firmware ?? "",
+      name: instance.name,
+      state: instance.state ?? "offline",
+      writable: instance.writable ?? true,
+    }));
+  }
+
+  /** The passwordless sudo whitelist entry the privilege fallback probes for. */
+  setPasswordlessSudo(available: boolean): void {
+    this.passwordlessSudo = available;
   }
 
   setConnectFailure(fail: boolean): void {
@@ -67,6 +107,12 @@ export class FakeSshTransport implements SshTransport {
 
   remoteFile(path: string): Buffer | undefined {
     return this.files.get(path);
+  }
+
+  /** Every remote path the fake target holds, so a test can assert that no
+   *  staging file survived an operation. */
+  remoteFiles(): Array<string> {
+    return [...this.files.keys()];
   }
 
   /** Simulates an established session dropping so consumers can exercise
@@ -173,6 +219,50 @@ export class FakeSshTransport implements SshTransport {
       handle.push(null);
       return handle;
     }
+    if (events === undefined && request.command.startsWith("sudo -n -l ")) {
+      // The privilege probe asks whether the account may run the whitelisted
+      // control write; the answer is the simulated whitelist state.
+      handle.push({ kind: "exit", status: this.passwordlessSudo ? 0 : 1 });
+      handle.push(null);
+      return handle;
+    }
+    const remoteprocWrite = events === undefined ? this.remoteprocControl(request.command) : undefined;
+    if (remoteprocWrite !== undefined) {
+      for (const event of remoteprocWrite) {
+        handle.push(event);
+      }
+      handle.push(null);
+      return handle;
+    }
+    if (events === undefined && request.command.includes("trace0")) {
+      // The kernel trace is debugfs content; a test that wants output
+      // registers it against the exact command string.
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
+    if (
+      events === undefined &&
+      request.command.startsWith("for d in /sys/class/remoteproc/remoteproc*") &&
+      request.command.includes("test -w")
+    ) {
+      const table = this.remoteprocInstances
+        .map((instance) =>
+          [
+            instance.directory,
+            instance.name,
+            instance.state,
+            instance.firmware,
+            instance.writable ? "yes" : "no",
+          ].join("\t")
+        )
+        .map((line) => `${line}\n`)
+        .join("");
+      handle.push({ kind: "output", stream: "stdout", bytes: Buffer.from(table) });
+      handle.push({ kind: "exit", status: 0 });
+      handle.push(null);
+      return handle;
+    }
     if (events !== undefined) {
       for (const event of events) {
         handle.push(event);
@@ -252,6 +342,52 @@ export class FakeSshTransport implements SshTransport {
     if (!this.connected) {
       throw new BetelgeuzError("ssh.lost");
     }
+  }
+
+  /**
+   * Simulates a remoteproc control write (state or firmware) with the outcome
+   * protocol the real template renders: the echoed value on success,
+   * `instance-missing` when the fixed loop matches no instance, and a
+   * non-zero exit when the write is refused — a directly unwritable control
+   * without the sudo whitelist, or a whitelisted write the account lacks.
+   * Returns `undefined` when the command is not a control write.
+   */
+  private remoteprocControl(command: string): Array<ExecEvent> | undefined {
+    const attribute = command.includes(`tee "$d/state"`)
+      ? "state"
+      : command.includes(`tee "$d/firmware"`)
+        ? "firmware"
+        : undefined;
+    if (attribute === undefined) {
+      return undefined;
+    }
+    const name = /test "\$\(cat "\$d\/name" 2>\/dev\/null\)" = '([^']*)'/.exec(command)?.[1];
+    const value = /printf '%s\\n' '([^']*)' \|/.exec(command)?.[1];
+    if (name === undefined || value === undefined) {
+      return undefined;
+    }
+    const privileged = command.includes("sudo -n ");
+    const instance = this.remoteprocInstances.find((entry) => entry.name === name);
+    if (instance === undefined) {
+      return [
+        { kind: "output", stream: "stdout", bytes: Buffer.from("instance-missing\n") },
+        { kind: "exit", status: 0 },
+      ];
+    }
+    if (!instance.writable && !(privileged && this.passwordlessSudo)) {
+      return [{ kind: "exit", status: 1 }];
+    }
+    if (attribute === "state") {
+      // The kernel's semantics, not a literal echo: writing `start` moves the
+      // core to running and `stop` to offline.
+      instance.state = value === "start" ? "running" : "offline";
+    } else {
+      instance.firmware = value;
+    }
+    return [
+      { kind: "output", stream: "stdout", bytes: Buffer.from(`${value}\n`) },
+      { kind: "exit", status: 0 },
+    ];
   }
 
   private modes = new Map<string, number>();

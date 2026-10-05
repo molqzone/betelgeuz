@@ -20,6 +20,7 @@ import { Secret } from "../../src/secret";
 import {
   readApplicationConfiguration,
   readProfileCatalog,
+  readStrategyConfiguration,
   readStrategy,
   readTarget,
 } from "../../src/surface/settings";
@@ -34,6 +35,12 @@ export const KEY_FILE = process.env.BETELGEUZ_TEST_KEY === undefined
   ? ""
   : process.env.BETELGEUZ_TEST_KEY.replace(/^~(?=$|\/)/, homedir());
 export const REMOTE_APP = "/tmp/betelgeuz-e2e/app";
+/** The small-core firmware workspace's remote firmware location. */
+export const REMOTE_FIRMWARE = "/lib/firmware/rtos.elf";
+/** The remoteproc instance the fixture workspace configures. */
+export const RPROC_INSTANCE = "cv181x-c906_1";
+/** True when the run targets the small-core firmware suite. */
+export const RPROC = process.env.BETELGEUZ_TEST_RPROC === "1";
 
 const shown: Array<{ level: string; text: string }> = [];
 
@@ -171,7 +178,9 @@ export function settingProblems(): Array<string> {
     ["readProfileCatalog", () => readProfileCatalog()],
     ["readTarget", () => readTarget(folder)],
     ["readStrategy", () => readStrategy(folder)],
-    ["readApplicationConfiguration", () => readApplicationConfiguration(folder)],
+    // The active strategy's own settings: the application strategy's
+    // deploy.* keys, or the small-core strategy's instance and firmware path.
+    ["readStrategyConfiguration", () => readStrategyConfiguration(folder)],
   ];
   const problems: Array<string> = [];
   for (const [name, read] of readers) {
@@ -205,4 +214,12 @@ export async function waitForApplicationState(
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+}
+
+/** Reads the small core's state off the board, so an assertion rests on the
+ *  target rather than on what the extension reported. */
+export async function onBoardCoreState(): Promise<{ firmware: string; state: string }> {
+  const state = await onBoard(["cat", "/sys/class/remoteproc/remoteproc0/state"]);
+  const firmware = await onBoard(["cat", "/sys/class/remoteproc/remoteproc0/firmware"]);
+  return { firmware, state };
 }

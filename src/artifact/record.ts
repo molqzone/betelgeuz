@@ -35,3 +35,27 @@ export async function readArtifactRecord(
     throw new BetelgeuzError("artifact.missing", { cause: error });
   }
 }
+
+/**
+ * Verifies the host file behind an artifact record still matches it, so a
+ * deploy reads the bytes the handoff described rather than whatever the path
+ * holds now. Returns the verified path and size for the upload stream.
+ */
+export async function verifyArtifactFile(
+  artifact: ArtifactRecord
+): Promise<{ path: string; size: number }> {
+  try {
+    const info = await stat(artifact.path);
+    if (!info.isFile() || info.size !== artifact.size) {
+      throw new BetelgeuzError("artifact.missing", {
+        detail: "the artifact path or size no longer matches the build record",
+      });
+    }
+    return { path: artifact.path, size: info.size };
+  } catch (error) {
+    if (error instanceof BetelgeuzError) {
+      throw error;
+    }
+    throw new BetelgeuzError("artifact.missing", { cause: error });
+  }
+}

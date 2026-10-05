@@ -4,13 +4,18 @@
  * Profile resolution and one-use credential lookup live here. The surface
  * passes typed values to this service and never constructs SSH options,
  * commands, or transport calls itself.
+ *
+ * Every target operation routes to the workspace's active strategy (plan §6:
+ * the command layer never addresses a board or chip resource directly). The
+ * strategies are created once per session from the compile-time registry in
+ * `strategy`; this service owns which one is bound to the active attach.
  */
 import { BetelgeuzError } from "./errors";
 import { throwIfAborted } from "./cancellation";
 import { resolveProfile, type ResolvedTargetProfile } from "./profile";
 import { assertDescriptorMatches, readHardwareDescriptor } from "./protocol/descriptor";
 import { Secret } from "./secret";
-import {
+import { strategyDescriptor, STRATEGY_REGISTRY, type DeployStrategy } from "./strategy";import {
   HostKeyFingerprint,
   type Authentication,
   type SshConnectOptions,
@@ -30,24 +35,24 @@ import type {
   InspectHostKeyResult,
   LogsParams,
   LogsResult,
+  OperationResult,
   ProxyHopProfile,
   ReconnectRequest,
   RestartRequest,
   ResolveProfileParams,
   ResolveProfileResult,
   ResolvedProfile,
+  RestorePreviousRequest,
   StartRequest,
   StatusRequest,
+  StatusResult,
   StopRequest,
+  ValidateStrategyRequest,
+  ValidateStrategyResult,
   VerifiedTargetIdentity,
 } from "./protocol";
-import {
-  SshApplicationStrategy,
-  type ApplicationRun,
-  type ApplicationStatus,
-  type OutputListener,
-  type RunOutcome,
-} from "./strategies/ssh-app";
+import type { OutputListener, RunOutcome } from "./protocol";
+import type { StrategyRun } from "./strategy";
 
 /** The identity-relevant fields an attach binds to: the endpoint plus the
  *  profile's pins. Anything else (keepalive, credential reference) may change
@@ -68,10 +73,12 @@ export class CoreService<T extends SshTransport> {
   private nextOperationId = 1;
   private activeStrategyId?: string;
   private boundTarget?: IdentityBinding;
-  private readonly application: SshApplicationStrategy;
+  private readonly strategies: Map<string, DeployStrategy>;
 
   constructor(private readonly transport: T) {
-    this.application = new SshApplicationStrategy(transport);
+    this.strategies = new Map(
+      STRATEGY_REGISTRY.map((entry) => [entry.descriptor.id, entry.create(transport)])
+    );
   }
 
   resolveProfile(params: ResolveProfileParams): ResolveProfileResult {
@@ -80,7 +87,7 @@ export class CoreService<T extends SshTransport> {
   }
 
   /** Probe before enrollment: reads the server key without accepting the
-   * session so the user can approve a pin. */
+   *  session so the user can approve a pin. */
   async inspectHostKey(
     params: InspectHostKeyParams,
     signal?: AbortSignal
@@ -95,11 +102,23 @@ export class CoreService<T extends SshTransport> {
     return { hostKeyFingerprint: fingerprint.asString() };
   }
 
+  /**
+   * Binds the workspace's active attach after the identity handshake. Only
+   * board identity is verified here — the bound strategy probes its own
+   * target interface through `validateStrategy` afterwards, and an
+   * incompatibility there never discards this binding (plan §3, Phase 5).
+   */
   async attach(request: AttachRequest, signal?: AbortSignal): Promise<AttachResult> {
     throwIfAborted(signal, "connect");
     if (this.attachedId !== undefined) {
       throw new BetelgeuzError("deploy.busy", {
         detail: "another attach is already active",
+      });
+    }
+    const descriptor = strategyDescriptor(request.strategyId);
+    if (descriptor === undefined) {
+      throw new BetelgeuzError("config.invalid", {
+        detail: `strategy \`${request.strategyId}\` is not implemented by this Betelgeuz version`,
       });
     }
     const resolved = resolveProfile(request.catalog, request.target);
@@ -116,7 +135,7 @@ export class CoreService<T extends SshTransport> {
     return {
       attachId,
       identity,
-      operations: [],
+      operations: [...descriptor.operations],
       profile: publicProfile(resolved),
       state: "attached",
       strategyId: request.strategyId,
@@ -127,7 +146,10 @@ export class CoreService<T extends SshTransport> {
    * Re-establishes the session of an existing attach after a drop, keeping the
    * attach's identity, strategy, and per-attach history. The identity handshake
    * runs in full before anything is reported — the plan's rule is that a
-   * reconnect re-validates identity before the UI reports target state.
+   * reconnect re-validates identity before the UI reports target state — and
+   * the strategy re-asserts any strategy-owned identity it holds (the
+   * remoteproc instance name), so a changed instance invalidates the binding
+   * instead of silently re-targeting it.
    *
    * A pin mismatch or an identity-relevant settings change invalidates the
    * attach (plan §3: the old binding is discarded); a plain connectivity
@@ -144,6 +166,7 @@ export class CoreService<T extends SshTransport> {
         detail: "the named attach is not the active attach",
       });
     }
+    const strategy = this.strategyFor(request.attachId);
     const resolved = resolveProfile(request.catalog, request.target);
     if (!sameBinding(this.boundTarget, identityBindingOf(resolved))) {
       await this.abandonAttach();
@@ -154,6 +177,7 @@ export class CoreService<T extends SshTransport> {
     let identity;
     try {
       identity = await this.handshake(resolved, request.credentialSecrets, signal);
+      await strategy.assertIdentity(signal);
     } catch (error) {
       if (isIdentityFailure(error)) {
         // A revalidation failure is a statement about the binding, not the
@@ -166,10 +190,10 @@ export class CoreService<T extends SshTransport> {
     return {
       attachId: request.attachId,
       identity,
-      operations: [],
+      operations: [...(strategyDescriptor(strategyId ?? "")?.operations ?? [])],
       profile: publicProfile(resolved),
       state: "attached",
-      strategyId: strategyId ?? "unknown",
+      strategyId: strategyId ?? strategy.id,
     };
   }
 
@@ -245,6 +269,20 @@ export class CoreService<T extends SshTransport> {
     }
   }
 
+  /**
+   * Probes the bound strategy's target interface. Called after `attach` so an
+   * incompatibility is reported while the attach survives: the binding holds
+   * and the user can pick another strategy (plan §3, Phase 5).
+   */
+  async validateStrategy(
+    request: ValidateStrategyRequest,
+    signal?: AbortSignal
+  ): Promise<ValidateStrategyResult> {
+    const strategy = this.strategyFor(request.attachId);
+    await strategy.validate(request.configuration, signal);
+    return { strategyId: strategy.id };
+  }
+
   async disconnect(ref: AttachRef): Promise<DisconnectResult> {
     if (this.attachedId === undefined) {
       return { state: "disconnected" };
@@ -255,13 +293,11 @@ export class CoreService<T extends SshTransport> {
         detail: "the named attach is not the active attach",
       });
     }
-    await this.application.stop(0).catch((error: unknown) => {
-      if (error instanceof BetelgeuzError && error.code === "deploy.busy") {
-        throw error;
-      }
-      return undefined;
-    });
-    this.application.reset();
+    const strategy = this.strategyFor(ref.attachId);
+    // The strategy owns whatever target work belongs to this session; a
+    // strategy whose runtime outlives the session does nothing here.
+    await strategy.release();
+    strategy.reset();
     this.attachedId = undefined;
     this.activeStrategyId = undefined;
     this.boundTarget = undefined;
@@ -278,10 +314,13 @@ export class CoreService<T extends SshTransport> {
    * the same reason.
    */
   async abandonAttach(): Promise<DisconnectResult> {
+    const strategy = this.activeStrategyId === undefined
+      ? undefined
+      : this.strategies.get(this.activeStrategyId);
     this.attachedId = undefined;
     this.activeStrategyId = undefined;
     this.boundTarget = undefined;
-    this.application.resetForcibly();
+    strategy?.resetForcibly();
     await this.transport.close();
     return { state: "disconnected" };
   }
@@ -290,12 +329,13 @@ export class CoreService<T extends SshTransport> {
     request: DeployRequest,
     signal?: AbortSignal
   ): Promise<DeployResult> {
-    this.requireApplicationAttach(request.attachId);
-    const deployed = await this.application.deploy(
-      request.artifact,
-      request.configuration,
-      signal
-    );
+    const strategy = this.strategyFor(request.attachId);
+    const deployed = await strategy.deploy(request.artifact, request.configuration, {
+      signal,
+      ...(request.stopRunningTarget === undefined
+        ? {}
+        : { stopRunningTarget: request.stopRunningTarget }),
+    });
     return {
       operationId: `operation-${this.nextOperationId++}`,
       remotePath: deployed.remotePath,
@@ -309,49 +349,61 @@ export class CoreService<T extends SshTransport> {
     request: StartRequest,
     onOutput?: OutputListener,
     signal?: AbortSignal
-  ): Promise<ApplicationRun> {
-    this.requireApplicationAttach(request.attachId);
-    return await this.application.start(request.configuration, onOutput, signal);
+  ): Promise<StrategyRun> {
+    const strategy = this.strategyFor(request.attachId);
+    return await strategy.start(request.configuration, onOutput, signal);
   }
 
   async stop(request: StopRequest): Promise<RunOutcome | undefined> {
-    this.requireApplicationAttach(request.attachId);
-    return await this.application.stop(request.graceMs);
+    const strategy = this.strategyFor(request.attachId);
+    return await strategy.stop(request.configuration, request.graceMs);
   }
 
   async restart(
     request: RestartRequest,
     onOutput?: OutputListener,
     signal?: AbortSignal
-  ): Promise<ApplicationRun> {
-    this.requireApplicationAttach(request.attachId);
-    return await this.application.restart(request.configuration, onOutput, signal);
+  ): Promise<StrategyRun> {
+    const strategy = this.strategyFor(request.attachId);
+    return await strategy.restart(request.configuration, onOutput, signal);
   }
 
-  async status(
-    request: StatusRequest,
+  async status(request: StatusRequest, signal?: AbortSignal): Promise<StatusResult> {
+    const strategy = this.strategyFor(request.attachId);
+    return await strategy.inspect(request.configuration, signal);
+  }
+
+  async logs(request: LogsParams): Promise<LogsResult> {
+    const strategy = this.strategyFor(request.attachId);
+    return await strategy.logs(request.configuration, request.cursor, request.maxBytes);
+  }
+
+  async restorePrevious(
+    request: RestorePreviousRequest,
     signal?: AbortSignal
-  ): Promise<ApplicationStatus> {
-    this.requireApplicationAttach(request.attachId);
-    return await this.application.inspect(signal);
+  ): Promise<OperationResult> {
+    const strategy = this.strategyFor(request.attachId);
+    await strategy.restorePrevious(request.configuration, signal);
+    return { operationId: `operation-${this.nextOperationId++}` };
   }
 
-  logs(request: LogsParams): LogsResult {
-    this.requireApplicationAttach(request.attachId);
-    return this.application.logs(request.cursor, request.maxBytes);
-  }
-
-  private requireApplicationAttach(attachId: string): void {
+  /** The active attach's strategy. An unknown attach ID is a stale reference;
+   *  a missing implementation is unreachable because `attach` only accepts
+   *  registry IDs, and fails loudly rather than falling back (A1/A3). */
+  private strategyFor(attachId: string): DeployStrategy {
     if (this.attachedId === undefined || attachId !== this.attachedId) {
       throw new BetelgeuzError("identity.instance-changed", {
         detail: "the named attach is not the active attach",
       });
     }
-    if (this.activeStrategyId !== "linux.ssh-app") {
-      throw new BetelgeuzError("strategy.unsupported-target", {
-        detail: `strategy ${this.activeStrategyId ?? "unknown"} has no Phase 1 operation implementation`,
-      });
+    const id = this.activeStrategyId;
+    const strategy = id === undefined ? undefined : this.strategies.get(id);
+    if (strategy === undefined) {
+      throw new Error(
+        `invariant violated: active strategy ${id ?? "none"} has no implementation`
+      );
     }
+    return strategy;
   }
 }
 

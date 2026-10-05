@@ -1,17 +1,19 @@
 /**
  * Linux userspace application strategy.
  *
- * This module owns the Phase 1 application workflow after the shared SSH
- * attach has verified the board: a host artifact is staged through SFTP and
- * atomically renamed, then a structured foreground exec is kept in a small
- * host-side output ring. It deliberately accepts no free-form shell command.
+ * This module owns the Phase 1 application workflow behind the shared
+ * strategy contract (src/strategy.ts): a host artifact is staged through SFTP
+ * and atomically renamed, then a structured foreground exec is kept in a
+ * small host-side output ring. It deliberately accepts no free-form shell
+ * command. The busy lock, the fixed-command runner, and the probe parser come
+ * from the shared operation coordinator they now share with the small-core
+ * strategy.
  */
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { cancellationError, throwIfAborted } from "../cancellation";
+import { throwIfAborted } from "../cancellation";
 import {
   assertRuntimeCompatible,
   inspectElf,
@@ -19,8 +21,24 @@ import {
   type ElfClass,
   type ElfEndian,
 } from "../artifact/elf";
-import { BetelgeuzError } from "../errors";
-import type { ApplicationConfiguration, ArtifactRecord, OutputChunk } from "../protocol";
+import { verifyArtifactFile } from "../artifact/record";
+import { BetelgeuzError, type ErrorCode } from "../errors";
+import { MutationLock, isCancellation, parseFields, runFixedCommand } from "../operation";
+import type {
+  ApplicationConfiguration,
+  ArtifactRecord,
+  LogsResult,
+  OutputChunk,
+  OutputListener,
+  RunOutcome,
+  StatusResult,
+} from "../protocol";
+import {
+  type DeployOptions,
+  type DeployOutcome,
+  type DeployStrategy,
+  type StrategyRun,
+} from "../strategy";
 import { Secret } from "../secret";
 import {
   ExecRequest,
@@ -31,10 +49,10 @@ import {
   type SshTransport,
 } from "../transport";
 
+export type { OutputListener, RunOutcome } from "../protocol";
+
 const DEFAULT_RING_BYTES = 256 * 1024;
 const DEFAULT_STOP_GRACE_MS = 5_000;
-const MAX_PROBE_BYTES = 16 * 1024;
-const PROBE_TIMEOUT_MS = 5_000;
 /** Bound on the launcher's pid marker line before it is treated as ordinary
  *  output (E2: the head buffer cannot grow without limit). */
 const MAX_MARKER_LINE_BYTES = 64;
@@ -44,31 +62,14 @@ const ORPHAN_POLL_MS = 250;
  *  an uninterruptible process, so one bounded sweep proves the exit. */
 const KILL_CONFIRM_MS = ORPHAN_POLL_MS * 2;
 
+/** The application strategy's settings, under their contract name. */
 export type SshApplicationConfiguration = ApplicationConfiguration;
 
-export type DeploymentResult = {
-  previousSize?: number;
-  remotePath: string;
-};
+export type ApplicationRun = StrategyRun;
 
-export type RunOutcome = {
-  signal?: string;
-  status?: number;
-};
+export type ApplicationStatus = StatusResult;
 
-export type ApplicationRun = {
-  readonly completion: Promise<RunOutcome>;
-  readonly runId: string;
-};
-
-export type ApplicationStatus = {
-  /** An outcome with neither `status` nor `signal` is an exit whose details
-   *  were not observed — the channel was already gone when the process ended. */
-  outcome?: RunOutcome;
-  state: "exited" | "running" | "stopped";
-};
-
-export type OutputListener = (chunk: OutputChunk) => void;
+export type DeploymentResult = DeployOutcome;
 
 type ActiveRun = {
   readonly completion: Promise<RunOutcome>;
@@ -99,15 +100,17 @@ type DestinationPreflight = {
 };
 
 /** Strategy implementation shared by the core service and fake transport. */
-export class SshApplicationStrategy {
+export class SshApplicationStrategy implements DeployStrategy {
+  readonly id = "linux.ssh-app";
+  readonly role = "big-core";
   private active?: ActiveRun;
   /** A run whose channel ended without an exit status: the process may be dead
    *  or alive, and only a target probe can say which. Held until `inspect`
    *  reconciles it or `stop` cleans it up. */
   private orphan?: ActiveRun;
   /** Held while a mutating operation runs; a release only clears the token it was
-   * issued with, so an operation that outlived its attach cannot clear a newer one. */
-  private mutationToken?: symbol;
+   *  issued with, so an operation that outlived its attach could not clear a newer one. */
+  private readonly mutation = new MutationLock();
   private lastOutcome?: RunOutcome;
   private nextCursor = 0;
   private ringTotalBytes = 0;
@@ -117,9 +120,13 @@ export class SshApplicationStrategy {
 
   async deploy(
     artifact: ArtifactRecord,
-    configuration: SshApplicationConfiguration,
-    signal?: AbortSignal
-  ): Promise<DeploymentResult> {
+    configuration: unknown,
+    options: DeployOptions = {}
+  ): Promise<DeployOutcome> {
+    const signal = options.signal;
+    // The application strategy refuses to deploy while a run is active rather
+    // than stopping it, so `stopRunningTarget` is not consulted here.
+    const settings = parseApplicationConfiguration(configuration);
     throwIfAborted(signal, "deploy");
     await this.reconcileOrphan(signal);
     if (this.active !== undefined) {
@@ -127,11 +134,11 @@ export class SshApplicationStrategy {
         detail: "cannot deploy while the application is running",
       });
     }
-    const releaseMutation = this.enterMutation();
+    const releaseMutation = this.mutation.enter();
     try {
-    const remotePath = validAbsolutePath(configuration.remotePath, "remotePath");
-    const mode = parseMode(configuration.fileMode);
-    const source = await localArtifact(artifact);
+    const remotePath = validAbsolutePath(settings.remotePath, "remotePath");
+    const mode = parseMode(settings.fileMode);
+    const source = await verifyArtifactFile(artifact);
     const elf = await inspectElf(source.path, source.size);
     const runtime = await this.readRuntimeProbe(signal);
     assertRuntimeCompatible(elf, runtime);
@@ -164,7 +171,7 @@ export class SshApplicationStrategy {
       if (!committed) {
         await this.removeStaging(stagingPath);
       }
-      if (isAbort(error) || signal?.aborted === true) {
+      if (isCancellation(error) || signal?.aborted === true) {
         throw new BetelgeuzError("deploy.cancelled", {
           phase: "deploy",
           cause: error,
@@ -178,27 +185,28 @@ export class SshApplicationStrategy {
   }
 
   async start(
-    configuration: SshApplicationConfiguration,
+    configuration: unknown,
     onOutput?: OutputListener,
     signal?: AbortSignal
-  ): Promise<ApplicationRun> {
+  ): Promise<StrategyRun> {
+    const settings = parseApplicationConfiguration(configuration);
     throwIfAborted(signal, "lifecycle");
     await this.reconcileOrphan(signal);
-    if (this.active !== undefined || this.mutationToken !== undefined) {
+    if (this.active !== undefined || this.mutation.held) {
       throw new BetelgeuzError("deploy.busy", {
         detail: "an application run is already active",
       });
     }
-    if (configuration.runMode === "service") {
+    if (settings.runMode === "service") {
       throw new BetelgeuzError("runtime.service-manager-missing", {
-        detail: configuration.serviceUnit === undefined
+        detail: settings.serviceUnit === undefined
           ? "service mode requires a pre-provisioned service unit"
-          : `systemd service ${configuration.serviceUnit} is not available in Phase 1`,
+          : `systemd service ${settings.serviceUnit} is not available in Phase 1`,
       });
     }
-    const releaseMutation = this.enterMutation();
+    const releaseMutation = this.mutation.enter();
     try {
-    const request = this.launchRequest(configuration);
+    const request = this.launchRequest(settings);
     const handle = await this.transport.exec(request);
     try {
       throwIfAborted(signal, "lifecycle");
@@ -232,18 +240,21 @@ export class SshApplicationStrategy {
     }
   }
 
-  async stop(graceMs = DEFAULT_STOP_GRACE_MS): Promise<RunOutcome | undefined> {
+  /** The foreground run's stop needs no configuration; the parameter exists
+   *  so every strategy operation has the same shape. */
+  async stop(configuration: unknown, graceMs = DEFAULT_STOP_GRACE_MS): Promise<RunOutcome | undefined> {
+    void configuration;
     const orphan = this.orphan;
     const active = this.active;
     if (active === undefined && orphan === undefined) {
-      if (this.mutationToken !== undefined) {
+      if (this.mutation.held) {
         throw new BetelgeuzError("deploy.busy", {
           detail: "another mutating operation is already running",
         });
       }
       return this.lastOutcome;
     }
-    const releaseMutation = this.enterMutation();
+    const releaseMutation = this.mutation.enter();
     try {
       if (orphan !== undefined) {
         return await this.stopOrphan(orphan, graceMs);
@@ -302,11 +313,10 @@ export class SshApplicationStrategy {
   }
 
   private async signalGroup(pid: number, signal: "TERM" | "KILL"): Promise<void> {
-    await this.runFixed(
+    await runFixedCommand(
+      this.transport,
       ExecRequest.fixed({ kind: "signalProcessGroup", pid, signal }),
-      undefined,
-      "runtime.orphan-risk",
-      "process signal"
+      { failure: failWith("runtime.orphan-risk"), step: "process signal" }
     );
   }
 
@@ -316,7 +326,7 @@ export class SshApplicationStrategy {
     if (this.orphan === undefined) {
       return;
     }
-    await this.inspect(signal);
+    await this.inspect(undefined, signal);
     if (this.orphan !== undefined) {
       throw new BetelgeuzError("deploy.busy", {
         detail:
@@ -341,12 +351,13 @@ export class SshApplicationStrategy {
   }
 
   async restart(
-    configuration: SshApplicationConfiguration,
+    configuration: unknown,
     onOutput?: OutputListener,
     signal?: AbortSignal
-  ): Promise<ApplicationRun> {
+  ): Promise<StrategyRun> {
+    const settings = parseApplicationConfiguration(configuration);
     throwIfAborted(signal, "lifecycle");
-    await this.stop(configuration.stopGraceMs);
+    await this.stop(settings, settings.stopGraceMs);
     throwIfAborted(signal, "lifecycle");
     return await this.start(configuration, onOutput, signal);
   }
@@ -364,7 +375,10 @@ export class SshApplicationStrategy {
    * - nothing recorded to probe → `runtime.orphan-risk`; this method never
    *   guesses a state it cannot prove.
    */
-  async inspect(signal?: AbortSignal): Promise<ApplicationStatus> {
+  /** Status needs no configuration; the parameter exists so every strategy
+   *  operation has the same shape. */
+  async inspect(configuration: unknown, signal?: AbortSignal): Promise<StatusResult> {
+    void configuration;
     const orphan = this.orphan;
     if (orphan === undefined) {
       return this.observedStatus();
@@ -397,11 +411,10 @@ export class SshApplicationStrategy {
   }
 
   private async probeAlive(pid: number, signal?: AbortSignal): Promise<boolean> {
-    const output = await this.runFixed(
+    const output = await runFixedCommand(
+      this.transport,
       ExecRequest.fixed({ kind: "probeProcess", pid }),
-      signal,
-      "runtime.orphan-risk",
-      "process probe"
+      { failure: failWith("runtime.orphan-risk"), signal, step: "process probe" }
     );
     return output.trim() === "alive";
   }
@@ -419,7 +432,7 @@ export class SshApplicationStrategy {
 
   /** Clears per-attach runtime history after the shared session is closed. */
   reset(): void {
-    if (this.active !== undefined || this.mutationToken !== undefined) {
+    if (this.active !== undefined || this.mutation.held) {
       throw new BetelgeuzError("deploy.busy", {
         detail: "cannot reset an active application run",
       });
@@ -434,7 +447,7 @@ export class SshApplicationStrategy {
    * dead one, or be refused by a run it can no longer reach.
    */
   resetForcibly(): void {
-    this.mutationToken = undefined;
+    this.mutation.clear();
     this.active = undefined;
     this.lastOutcome = undefined;
     this.nextCursor = 0;
@@ -454,10 +467,14 @@ export class SshApplicationStrategy {
     }
   }
 
-  logs(cursor?: string | null, maxBytes = DEFAULT_RING_BYTES): {
-    chunks: Array<OutputChunk>;
-    nextCursor?: string;
-  } {
+  /** Logs come from the host-side ring, so no configuration is read; the
+   *  parameter exists so every strategy operation has the same shape. */
+  async logs(
+    configuration: unknown,
+    cursor?: string | null,
+    maxBytes = DEFAULT_RING_BYTES
+  ): Promise<LogsResult> {
+    void configuration;
     if (!Number.isInteger(maxBytes) || maxBytes < 1) {
       throw new BetelgeuzError("config.invalid", {
         detail: "log maxBytes must be a positive integer",
@@ -625,28 +642,13 @@ export class SshApplicationStrategy {
     }
   }
 
-  private enterMutation(): () => void {
-    if (this.mutationToken !== undefined) {
-      throw new BetelgeuzError("deploy.busy", {
-        detail: "another mutating operation is already running",
-      });
-    }
-    const token = Symbol("mutation");
-    this.mutationToken = token;
-    return () => {
-      if (this.mutationToken === token) {
-        this.mutationToken = undefined;
-      }
-    };
-  }
-
   private async readRuntimeProbe(signal?: AbortSignal): Promise<RuntimeProbe> {
-    const output = await this.fixedProbe(
+    const output = await runFixedCommand(
+      this.transport,
       ExecRequest.fixed({ kind: "readRuntimeProbe" }),
-      signal,
-      "artifact.runtime-probe-failed"
+      { failure: failWith("artifact.runtime-probe-failed"), signal, step: "target probe" }
     );
-    const fields = parseProbeFields(output);
+    const fields = parseFields(output);
     const elfClass = fields.elfClass === "32" ? 1 : fields.elfClass === "64" ? 2 : undefined;
     const endian = fields.endianness === "little" || fields.endianness === "big"
       ? fields.endianness
@@ -663,12 +665,12 @@ export class SshApplicationStrategy {
     directory: string,
     signal?: AbortSignal
   ): Promise<DestinationPreflight> {
-    const output = await this.fixedProbe(
+    const output = await runFixedCommand(
+      this.transport,
       ExecRequest.fixed({ kind: "preflightDestination", directory }),
-      signal,
-      "deploy.preflight-failed"
+      { failure: failWith("deploy.preflight-failed"), signal, step: "target probe" }
     );
-    const fields = parseProbeFields(output);
+    const fields = parseFields(output);
     const freeBytes = fields.freeBytes === undefined ? undefined : Number(fields.freeBytes);
     return {
       freeBytes: freeBytes !== undefined && Number.isSafeInteger(freeBytes) ? freeBytes : undefined,
@@ -678,107 +680,49 @@ export class SshApplicationStrategy {
   }
 
   /** Creates the destination directory so the preflight judges permissions
-   * rather than absence. */
+   *  rather than absence. */
   private async ensureDirectory(directory: string, signal: AbortSignal | undefined): Promise<void> {
-    await this.runFixed(
+    await runFixedCommand(
+      this.transport,
       ExecRequest.fixed({ kind: "makeDirectory", directory }),
-      signal,
-      "deploy.preflight-failed",
-      "mkdir"
+      { failure: failWith("deploy.preflight-failed"), signal, step: "mkdir" }
     );
   }
 
-  private async fixedProbe(
-    request: ExecRequest,
-    signal: AbortSignal | undefined,
-    failureCode: ProbeFailure
-  ): Promise<string> {
-    return await this.runFixed(request, signal, failureCode, "target probe");
+  /**
+   * Configuration-only validation: the target-side runtime checks live in
+   * `deploy` (the Phase 1 behavior), so a bind-time probe never opens a
+   * session on the application strategy's behalf.
+   */
+  async validate(configuration: unknown): Promise<void> {
+    parseApplicationConfiguration(configuration);
   }
 
-  private async runFixed(
-    request: ExecRequest,
-    signal: AbortSignal | undefined,
-    failureCode: ProbeFailure,
-    step: string
-  ): Promise<string> {
-    throwIfAborted(signal, "deploy");
-    const handle = await this.transport.exec(request);
-    const chunks: Array<Buffer> = [];
-    let total = 0;
-    let exit: Extract<Awaited<ReturnType<ExecHandle["nextEvent"]>>, { kind: "exit" }> | undefined;
-    const deadline = Date.now() + PROBE_TIMEOUT_MS;
-    try {
-      for (;;) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) {
-          throw new BetelgeuzError(failureCode, {
-            detail: `${step} exceeded ${PROBE_TIMEOUT_MS} ms`,
-          });
-        }
-        const event = await nextProbeEvent(handle, remaining, signal, failureCode, step);
-        if (event === null) {
-          break;
-        }
-        if (event.kind === "output" && event.stream === "stdout") {
-          total += event.bytes.byteLength;
-          if (total > MAX_PROBE_BYTES) {
-            throw new BetelgeuzError(failureCode, {
-              detail: `${step} exceeded its output limit`,
-            });
-          }
-          chunks.push(event.bytes);
-        } else if (event.kind === "exit") {
-          exit = event;
-        }
-      }
-      if (exit?.status !== 0) {
-        throw new BetelgeuzError(failureCode, {
-          detail: `${step} did not complete successfully`,
-        });
-      }
-      return Buffer.concat(chunks).toString("utf8");
-    } catch (error) {
-      await handle.terminate().catch(() => undefined);
-      if (signal?.aborted === true) {
-        throw cancellationError("deploy", signal.reason);
-      }
-      throw error;
-    }
-  }
-}
+  /** The application strategy owns no target identity beyond the shared
+   *  binding (host key and descriptor pins), which the core re-validates on
+   *  every reconnect — so there is nothing strategy-specific to assert. */
+  async assertIdentity(): Promise<void> {}
 
-async function localArtifact(artifact: ArtifactRecord): Promise<{ path: string; size: number }> {
-  try {
-    const info = await stat(artifact.path);
-    if (!info.isFile() || info.size !== artifact.size) {
-      throw new BetelgeuzError("artifact.missing", {
-        detail: "the artifact path or size no longer matches the build record",
-      });
-    }
-    return { path: artifact.path, size: info.size };
-  } catch (error) {
-    if (error instanceof BetelgeuzError) {
-      throw error;
-    }
-    throw new BetelgeuzError("artifact.missing", { cause: error });
+  /** Plan §6: a strategy that cannot retain or restore reports the operation
+   *  unavailable rather than pretending to offer it. */
+  async restorePrevious(): Promise<void> {
+    throw new BetelgeuzError("strategy.unsupported-target", {
+      detail: "linux.ssh-app does not retain previous versions; restore is unavailable",
+    });
   }
-}
 
-function parseProbeFields(output: string): Record<string, string> {
-  const fields: Record<string, string> = {};
-  for (const line of output.split(/\r?\n/)) {
-    const separator = line.indexOf("\t");
-    if (separator <= 0) {
-      continue;
-    }
-    const key = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1).trim();
-    if (key !== "") {
-      fields[key] = value;
-    }
+  /** An explicit disconnect stops the foreground run it owns: a foreground
+   *  process is execution state tied to this session, and stopping it must
+   *  succeed before the session is closed — unless another mutating operation
+   *  is already in flight, which refuses the disconnect. */
+  async release(): Promise<void> {
+    await this.stop(undefined).catch((error: unknown) => {
+      if (error instanceof BetelgeuzError && error.code === "deploy.busy") {
+        throw error;
+      }
+      return undefined;
+    });
   }
-  return fields;
 }
 
 function describePreflightFailure(preflight: DestinationPreflight, size: number): string {
@@ -795,42 +739,6 @@ function describePreflightFailure(preflight: DestinationPreflight, size: number)
     return "the destination filesystem does not have enough free space";
   }
   return "the destination filesystem failed deployment preflight";
-}
-
-async function nextProbeEvent(
-  handle: ExecHandle,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-  failureCode: ProbeFailure,
-  step: string
-): Promise<Awaited<ReturnType<ExecHandle["nextEvent"]>>> {
-  let timer: NodeJS.Timeout | undefined;
-  let abortListener: (() => void) | undefined;
-  try {
-    return await Promise.race([
-      handle.nextEvent(),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new BetelgeuzError(failureCode, {
-          detail: `${step} timed out`,
-        })), timeoutMs);
-        if (signal !== undefined) {
-          abortListener = () => reject(cancellationError("deploy", signal.reason));
-          if (signal.aborted) {
-            abortListener();
-          } else {
-            signal.addEventListener("abort", abortListener, { once: true });
-          }
-        }
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-    if (signal !== undefined && abortListener !== undefined) {
-      signal.removeEventListener("abort", abortListener);
-    }
-  }
 }
 
 function validAbsolutePath(value: string, field: string): string {
@@ -887,17 +795,116 @@ async function raceCompletion<T>(promise: Promise<T>, timeoutMs: number): Promis
   }
 }
 
-function isAbort(error: unknown): boolean {
-  return error instanceof BetelgeuzError &&
-    (error.code === "operation.cancelled" || error.code === "deploy.cancelled");
+/**
+ * Parses this strategy's settings from the untrusted configuration record:
+ * the path and the structured launch values a foreground run needs. A path
+ * must be absolute and NUL-free because it is encoded into the launcher
+ * command by the transport's quoting layer.
+ */
+export function parseApplicationConfiguration(value: unknown): ApplicationConfiguration {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new BetelgeuzError("config.invalid", {
+      detail: "the strategy configuration must be an object",
+    });
+  }
+  const record = value as Record<string, unknown>;
+  const remotePath = validAbsolutePath(
+    requireString(record.remotePath, "remotePath"),
+    "remotePath"
+  );
+  const args = optionalStringArray(record.args, "args");
+  const environment = optionalStringMap(record.environment, "environment");
+  const cwd = optionalString(record.cwd, "cwd");
+  const executable = optionalString(record.executable, "executable");
+  const fileMode = optionalString(record.fileMode, "fileMode");
+  const serviceUnit = optionalString(record.serviceUnit, "serviceUnit");
+  const runMode = optionalString(record.runMode, "runMode");
+  if (runMode !== undefined && runMode !== "foreground" && runMode !== "service") {
+    throw new BetelgeuzError("config.invalid", {
+      detail: "runMode must be foreground or service",
+    });
+  }
+  const stopGraceMs = record.stopGraceMs;
+  if (
+    stopGraceMs !== undefined &&
+    (!Number.isInteger(stopGraceMs) || (stopGraceMs as number) < 0)
+  ) {
+    throw new BetelgeuzError("config.invalid", {
+      detail: "stopGraceMs must be a non-negative integer",
+    });
+  }
+  return {
+    ...(args === undefined ? {} : { args }),
+    ...(cwd === undefined ? {} : { cwd }),
+    ...(environment === undefined ? {} : { environment }),
+    ...(executable === undefined ? {} : { executable }),
+    ...(fileMode === undefined ? {} : { fileMode }),
+    remotePath,
+    ...(runMode === undefined ? {} : { runMode }),
+    ...(serviceUnit === undefined ? {} : { serviceUnit }),
+    ...(stopGraceMs === undefined ? {} : { stopGraceMs: stopGraceMs as number }),
+  };
 }
 
-/** Failure vocabulary of the fixed probes: artifact checks, destination
- *  preflight, and process-state proof for orphaned runs. */
-type ProbeFailure =
-  | "artifact.runtime-probe-failed"
-  | "deploy.preflight-failed"
-  | "runtime.orphan-risk";
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new BetelgeuzError("config.invalid", {
+      detail: `${field} must be a non-empty string`,
+    });
+  }
+  return value;
+}
+
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new BetelgeuzError("config.invalid", {
+      detail: `${field} must be a string`,
+    });
+  }
+  return value === "" ? undefined : value;
+}
+
+function optionalStringArray(value: unknown, field: string): Array<string> | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new BetelgeuzError("config.invalid", {
+      detail: `${field} must be an array of strings`,
+    });
+  }
+  return [...(value as Array<string>)];
+}
+
+function optionalStringMap(
+  value: unknown,
+  field: string
+): Record<string, string> | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new BetelgeuzError("config.invalid", {
+      detail: `${field} must be an object of string values`,
+    });
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.some(([, item]) => typeof item !== "string")) {
+    throw new BetelgeuzError("config.invalid", {
+      detail: `${field} must be an object of string values`,
+    });
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
+/** Builds the failure a fixed probe reports: the shared runner detects the
+ *  failure, the strategy owns the code it surfaces. */
+function failWith(code: ErrorCode): (detail: string) => BetelgeuzError {
+  return (detail) => new BetelgeuzError(code, { detail });
+}
 
 /** True while `data` could still grow into the launcher's pid marker line.
  *  The strategy holds output back only this long; anything else is application

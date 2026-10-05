@@ -22,6 +22,9 @@ const board = {
   // Selects the CMake-source deploy suite (cmake-source.test.ts), which
   // builds the fixture's target through CMake Tools before deploying.
   BETELGEUZ_TEST_CMAKE: process.env.BETELGEUZ_TEST_CMAKE,
+  // Selects the small-core firmware suite (rproc.test.ts), which deploys the
+  // manual artifact as remoteproc firmware and drives the core lifecycle.
+  BETELGEUZ_TEST_RPROC: process.env.BETELGEUZ_TEST_RPROC,
   // A shell that launched from an AppImage can export an LD_LIBRARY_PATH that
   // breaks cmake's own data-dir lookup; an empty value gives the extension
   // host and every child it spawns (cmake among them) a clean search path.

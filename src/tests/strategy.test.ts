@@ -117,8 +117,8 @@ describe("linux.ssh-app strategy", () => {
 
     await expect(run.completion).resolves.toEqual({ status: 7 });
     expect(output).toEqual(["stdout:ready\n", "stderr:warning\n"]);
-    expect(await strategy.inspect()).toEqual({ state: "exited", outcome: { status: 7 } });
-    expect(strategy.logs()).toMatchObject({
+    expect(await strategy.inspect(undefined)).toEqual({ state: "exited", outcome: { status: 7 } });
+    expect(await strategy.logs(undefined)).toMatchObject({
       chunks: [
         { stream: "stdout", bytes: Array.from(Buffer.from("ready\n")) },
         { stream: "stderr", bytes: Array.from(Buffer.from("warning\n")) },
@@ -190,7 +190,7 @@ describe("linux.ssh-app strategy", () => {
     });
     const strategy = new SshApplicationStrategy(transport);
     const run = await strategy.start({ remotePath: "/opt/app" });
-    await expect(strategy.stop(0)).resolves.toEqual({ signal: "KILL" });
+    await expect(strategy.stop(undefined, 0)).resolves.toEqual({ signal: "KILL" });
     await expect(run.completion).resolves.toEqual({ signal: "KILL" });
     expect(transport.terminated).toBe(true);
     expect(transport.killed).toBe(true);
@@ -302,17 +302,17 @@ describe("linux.ssh-app strategy", () => {
     const run = await strategy.start({ remotePath: "/opt/app" });
     await expect(run.completion).resolves.toEqual({ status: 0 });
 
-    const first = strategy.logs(undefined, 4);
+    const first = await strategy.logs(undefined, undefined, 4);
     expect(first.chunks).toEqual([
       { bytes: Array.from(Buffer.from("aaaa")), stream: "stdout" },
     ]);
     expect(first.nextCursor).toBe("1");
-    const second = strategy.logs(first.nextCursor, 4);
+    const second = await strategy.logs(undefined, first.nextCursor, 4);
     expect(second.chunks).toEqual([
       { bytes: Array.from(Buffer.from("bbbb")), stream: "stdout" },
     ]);
     expect(second.nextCursor).toBe("2");
-    const third = strategy.logs(second.nextCursor, 4);
+    const third = await strategy.logs(undefined, second.nextCursor, 4);
     expect(third.chunks).toEqual([
       { bytes: Array.from(Buffer.from("cccc")), stream: "stdout" },
     ]);
@@ -329,7 +329,7 @@ describe("linux.ssh-app strategy", () => {
     const run = await strategy.start({ remotePath: "/opt/app" });
     await expect(run.completion).resolves.toEqual({ status: 0 });
 
-    const page = strategy.logs(undefined, 4);
+    const page = await strategy.logs(undefined, undefined, 4);
     expect(page.chunks).toEqual([
       { bytes: Array.from(Buffer.from("0123456789")), stream: "stdout" },
     ]);
@@ -345,12 +345,12 @@ describe("linux.ssh-app strategy", () => {
     const strategy = new SshApplicationStrategy(transport);
     const run = await strategy.start({ remotePath: "/opt/app" });
     await expect(run.completion).resolves.toEqual({ status: 3 });
-    expect(strategy.logs().chunks).toHaveLength(1);
+    expect((await strategy.logs(undefined)).chunks).toHaveLength(1);
 
     strategy.resetForcibly();
 
-    expect(strategy.logs()).toEqual({ chunks: [] });
-    expect(await strategy.inspect()).toEqual({ state: "stopped" });
+    expect(await strategy.logs(undefined)).toEqual({ chunks: [] });
+    expect(await strategy.inspect(undefined)).toEqual({ state: "stopped" });
   });
 
   it("lets a run outlive its attach and stops tracking it", async () => {
@@ -370,14 +370,14 @@ describe("linux.ssh-app strategy", () => {
     });
     const strategy = new SshApplicationStrategy(transport);
     await strategy.start({ remotePath: "/opt/app" });
-    expect(await strategy.inspect()).toEqual({ state: "running" });
+    expect(await strategy.inspect(undefined)).toEqual({ state: "running" });
 
     strategy.resetForcibly();
 
-    expect(await strategy.inspect()).toEqual({ state: "stopped" });
+    expect(await strategy.inspect(undefined)).toEqual({ state: "stopped" });
     const replacement = await strategy.start({ remotePath: "/opt/app" });
     expect(replacement.runId).toMatch(/^run-/);
-    expect(await strategy.inspect()).toEqual({ state: "running" });
+    expect(await strategy.inspect(undefined)).toEqual({ state: "running" });
   });
 
   it("keeps the replacement run when the abandoned run settles late", async () => {
@@ -429,9 +429,9 @@ describe("linux.ssh-app strategy", () => {
     transport.runs[0].settle({ kind: "exit", signal: "KILL" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(await strategy.inspect()).toEqual({ state: "running" });
+    expect(await strategy.inspect(undefined)).toEqual({ state: "running" });
     expect(transport.runs[0].terminated).toBe(false);
-    await expect(strategy.stop(0)).resolves.toEqual({ signal: "TERM" });
+    await expect(strategy.stop(undefined, 0)).resolves.toEqual({ signal: "TERM" });
     expect(transport.runs[1].terminated).toBe(true);
   });
 
@@ -561,9 +561,9 @@ describe("linux.ssh-app strategy", () => {
     transport.runs[0].settle({ kind: "exit", signal: "KILL" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(await strategy.inspect()).toEqual({ state: "running" });
+    expect(await strategy.inspect(undefined)).toEqual({ state: "running" });
     expect(transport.runs[0].terminated).toBe(false);
-    await expect(strategy.stop(0)).resolves.toEqual({ signal: "TERM" });
+    await expect(strategy.stop(undefined, 0)).resolves.toEqual({ signal: "TERM" });
     expect(transport.runs[1].terminated).toBe(true);
   });
 
@@ -585,7 +585,7 @@ describe("linux.ssh-app strategy", () => {
 
     // The marker names the process identity and is never application output.
     expect(output).toEqual(["hello\n"]);
-    expect(strategy.logs().chunks.map((c) => Buffer.from(c.bytes).toString())).toEqual([
+    expect((await strategy.logs(undefined)).chunks.map((c) => Buffer.from(c.bytes).toString())).toEqual([
       "hello\n",
     ]);
   });
@@ -658,12 +658,12 @@ describe("linux.ssh-app strategy", () => {
 
     // The pid is recorded but the process is gone by probe time; the outcome
     // settles as exited with its details honestly unobserved.
-    await expect(strategy.inspect()).resolves.toEqual({
+    await expect(strategy.inspect(undefined)).resolves.toEqual({
       state: "exited",
       outcome: {},
     });
     await expect(run.completion).resolves.toEqual({});
-    await expect(strategy.inspect()).resolves.toEqual({
+    await expect(strategy.inspect(undefined)).resolves.toEqual({
       state: "exited",
       outcome: {},
     });
@@ -680,7 +680,7 @@ describe("linux.ssh-app strategy", () => {
     await settle();
 
     // A dead channel is not evidence about the target: the probe is.
-    await expect(strategy.inspect()).resolves.toEqual({ state: "running" });
+    await expect(strategy.inspect(undefined)).resolves.toEqual({ state: "running" });
   });
 
   it("refuses to report a state it cannot prove for an unidentified run", async () => {
@@ -693,7 +693,7 @@ describe("linux.ssh-app strategy", () => {
     await strategy.start({ remotePath: "/opt/app" });
     await settle();
 
-    await expect(strategy.inspect()).rejects.toMatchObject({
+    await expect(strategy.inspect(undefined)).rejects.toMatchObject({
       code: "runtime.orphan-risk",
     });
   });
@@ -709,9 +709,9 @@ describe("linux.ssh-app strategy", () => {
     await settle();
 
     // The channel is gone, so Stop signals the recorded group instead.
-    await expect(strategy.stop(1_000)).resolves.toEqual({ signal: "TERM" });
+    await expect(strategy.stop(undefined, 1_000)).resolves.toEqual({ signal: "TERM" });
     await expect(run.completion).resolves.toEqual({ signal: "TERM" });
-    await expect(strategy.inspect()).resolves.toEqual({
+    await expect(strategy.inspect(undefined)).resolves.toEqual({
       state: "exited",
       outcome: { signal: "TERM" },
     });
@@ -729,7 +729,7 @@ describe("linux.ssh-app strategy", () => {
     await settle();
 
     // Nothing can prove this process stopped, and claiming a stop would lie.
-    await expect(strategy.stop(0)).rejects.toMatchObject({
+    await expect(strategy.stop(undefined, 0)).rejects.toMatchObject({
       code: "runtime.orphan-risk",
     });
   });
@@ -752,7 +752,7 @@ describe("linux.ssh-app strategy", () => {
 
     // The run is discarded with its fate unproven, and says so.
     await unproven;
-    await expect(strategy.inspect()).resolves.toEqual({ state: "stopped" });
+    await expect(strategy.inspect(undefined)).resolves.toEqual({ state: "stopped" });
   });
 
   it("refuses to start a second run while the previous one still lives", async () => {
