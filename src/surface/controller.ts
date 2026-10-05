@@ -22,6 +22,7 @@ import {
 } from "../strategy";
 import { SshClient } from "../transport/ssh";
 import { clearCredential, loadCredential } from "./credentials";
+import { phaseLabel, remediationFor } from "./remediation";
 import { runReconnect } from "../reconnect";
 import {
   persistAttach,
@@ -145,7 +146,7 @@ export class ExtensionController implements vscode.Disposable {
     try {
       await handler();
     } catch (error) {
-      await this.showFailure(error, phase);
+      await this.showFailure(error, phase, handler);
     }
   }
 
@@ -386,7 +387,9 @@ export class ExtensionController implements vscode.Disposable {
         : BetelgeuzError.wrapUnexpected("inspect", error);
       runtime.lastError = structured;
       this.refreshStatus();
-      await this.showFailure(structured, "inspect");
+      await this.showFailure(structured, "inspect", () =>
+        this.validateStrategy(folder, runtime, runtime.epoch)
+      );
     }
   }
 
@@ -798,7 +801,7 @@ export class ExtensionController implements vscode.Disposable {
       this.log(`Reconnect to ${folder.name} gave up: ${failure.code}`);
       this.refreshStatus();
       if (this.activeFolderKey === folder.uri.toString()) {
-        await this.showFailure(failure, "connect");
+        await this.showFailure(failure, "connect", () => this.connect(folder));
       }
     } finally {
       if (runtime.reconnectAbort === abort) {
@@ -891,7 +894,11 @@ export class ExtensionController implements vscode.Disposable {
     this.status.show();
   }
 
-  private async showFailure(error: unknown, phase: Phase): Promise<void> {
+  private async showFailure(
+    error: unknown,
+    phase: Phase,
+    retry?: () => Promise<void>
+  ): Promise<void> {
     const structured = isBetelgeuzError(error)
       ? error
       : BetelgeuzError.wrapUnexpected(phase, error);
@@ -900,16 +907,53 @@ export class ExtensionController implements vscode.Disposable {
       await vscode.window.showInformationMessage("Betelgeuz connection cancelled.");
       return;
     }
-    const action = await vscode.window.showErrorMessage(
-      `Betelgeuz: ${structured.summary}`,
-      "Open Settings",
-      "View Output"
-    );
-    if (action === "Open Settings") {
-      await vscode.commands.executeCommand("workbench.action.openSettings", "betelgeuz");
-    } else if (action === "View Output") {
-      this.output.show(true);
+    const remediation = remediationFor(structured);
+    // The plan's presentation model (§6): failures are labelled by phase and
+    // carry one concrete remediation action. The summary is the catalog's
+    // uniform wording; the detail names the offending value; the advice is the
+    // step the plan's action table promises.
+    const lines = [
+      `Betelgeuz [${phaseLabel(structured.phase)}]: ${structured.summary}`,
+    ];
+    if (structured.detail !== undefined) {
+      lines.push(structured.detail);
     }
+    if (remediation.advice !== "") {
+      lines.push(remediation.advice);
+    }
+    const items: Array<string> = [];
+    if (remediation.retry === true && retry !== undefined) {
+      items.push("Try Again");
+    }
+    const button = remediation.button;
+    if (button !== undefined && this.commandAvailable(button)) {
+      items.push(button.label);
+    }
+    items.push("View Log");
+    const action = await vscode.window.showErrorMessage(lines.join("\n"), ...items);
+    if (action === undefined) {
+      return;
+    }
+    if (action === "View Log") {
+      this.output.show(true);
+      return;
+    }
+    if (action === "Try Again") {
+      // The failed command's own handler: the retry is the same operation, not
+      // a look-alike assembled here.
+      await retry?.();
+      return;
+    }
+    if (button !== undefined) {
+      await vscode.commands.executeCommand(button.command, ...(button.args ?? []));
+    }
+  }
+
+  /** A button whose command is not installed is worse than no button: it would
+   *  fail on click. The one conditional command is CMake Tools' build. */
+  private commandAvailable(button: { requiresExtension?: string }): boolean {
+    return button.requiresExtension === undefined ||
+      vscode.extensions.getExtension(button.requiresExtension) !== undefined;
   }
 
   private logFailure(error: unknown, phase: Phase): void {
