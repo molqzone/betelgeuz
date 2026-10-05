@@ -69,10 +69,10 @@
       "title": "Betelgeuz",
       "properties": {
         "betelgeuz.profiles": {
+          "markdownDescription": "Named SSH profiles shared by every workspace. Each entry describes one board: `host`, `port`, `username`, `credentialRef`, and the identity pins.\n\nExample:\n```json\n{\n  \"my-board\": {\n    \"host\": \"192.168.7.1\",\n    \"username\": \"root\",\n    \"credentialRef\": \"board-key\",\n    \"hostKey\": \"SHA256:...\"\n  }\n}\n```\n\nStore passwords, private keys, and passphrases through Betelgeuz commands so they stay in VS Code SecretStorage \u2014 never in this setting.",
           "type": "object",
           "default": {},
           "scope": "application",
-          "markdownDescription": "Named SSH profiles shared by workspaces. Store passwords, private keys, and passphrases through Betelgeuz commands so they remain in VS Code SecretStorage.",
           "additionalProperties": {
             "type": "object",
             "required": [
@@ -147,51 +147,61 @@
           }
         },
         "betelgeuz.target.profile": {
+          "markdownDescription": "Name of the `betelgeuz.profiles` entry this workspace connects to. The usual way to pick a board; the `betelgeuz.target.*` settings below override single fields when this workspace must differ from the shared profile.",
           "type": "string",
-          "scope": "resource",
-          "markdownDescription": "User-level Betelgeuz profile selected for this workspace folder."
+          "scope": "resource"
         },
         "betelgeuz.target.host": {
+          "markdownDescription": "Target host name or IP address. Overrides the selected profile's `host`. Leave empty to inherit the profile's value.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.target.port": {
+          "markdownDescription": "SSH port. Defaults to `22`. Overrides the selected profile's `port`.",
           "type": "integer",
           "minimum": 1,
           "maximum": 65535,
           "scope": "resource"
         },
         "betelgeuz.target.username": {
+          "markdownDescription": "SSH user. Overrides the selected profile's `username`.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.target.credentialRef": {
+          "markdownDescription": "Name of the stored credential this workspace signs in with. Betelgeuz finds it in VS Code SecretStorage and prompts to create it when missing. Overrides the selected profile's `credentialRef`.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.target.hostKey": {
+          "markdownDescription": "SHA-256 fingerprint of the board's SSH host key (`SHA256:...`) \u2014 the pin this workspace trusts. A presented key that does not match it is refused. Trust a board once through the connection flow and Betelgeuz fills this in; a pin is never silently updated from newly observed data.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.target.deviceId": {
+          "markdownDescription": "Pinned stable device identity, matched against the board's hardware descriptor. Optional: when the board reports no stable ID, leave empty and rely on the host-key pin alone.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.target.boardId": {
+          "markdownDescription": "Pinned board identifier from the hardware descriptor. Informational when empty; with a pin set, a mismatch refuses the attach.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.target.socId": {
+          "markdownDescription": "Pinned SoC identifier from the hardware descriptor, matched against the device-tree `compatible` entries. Informational when empty.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.target.keepaliveSeconds": {
+          "markdownDescription": "SSH keepalive interval in seconds. Defaults to `30`.",
           "type": "integer",
           "minimum": 1,
           "maximum": 65535,
           "scope": "resource"
         },
         "betelgeuz.target.proxyChain": {
+          "markdownDescription": "Ordered SSH jump hosts, each with its own endpoint, `credentialRef`, and required `hostKey` pin. Arbitrary proxy commands are rejected; leave empty for a direct connection.",
           "type": "array",
           "items": {
             "type": "object"
@@ -199,41 +209,47 @@
           "scope": "resource"
         },
         "betelgeuz.attach.strategy": {
+          "markdownDescription": "Deploy strategy for this workspace's attach \u2014 `linux.ssh-app` for a Linux application, `linux.remoteproc` for small-core firmware. Choose it with `Betelgeuz: Select SSH Target`. Strategy-specific settings live under `betelgeuz.attach.<strategy>.`.",
           "type": "string",
-          "scope": "resource",
-          "markdownDescription": "Deploy strategy selected for this workspace's attach."
+          "scope": "resource"
         },
         "betelgeuz.deploy.localTarget": {
+          "markdownDescription": "Name of the CMake target whose already-built artifact is deployed. Betelgeuz consumes the artifact CMake Tools produced \u2014 it never triggers a build.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.artifactPath": {
+          "markdownDescription": "The artifact to deploy when `betelgeuz.deploy.source` is `manual`. A relative path resolves against the workspace folder; a directory holding exactly one ELF file is accepted. Leave empty to choose the file once through a file dialog \u2014 that choice is remembered per workspace folder.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.artifact": {
+          "markdownDescription": "Reserved for a later phase: selects one artifact by suffix or pattern when a CMake target produces several. Unset is the MVP behavior \u2014 a target with more than one artifact reports `artifact.ambiguous` rather than guessing.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.source": {
+          "markdownDescription": "Where the artifact comes from: `cmake` resolves it through CMake Tools for `betelgeuz.deploy.localTarget`, `manual` uses `betelgeuz.deploy.artifactPath`. Defaults to `cmake`.",
           "type": "string",
           "enum": [
             "cmake",
             "manual"
           ],
           "default": "cmake",
-          "scope": "resource",
-          "markdownDescription": "Where the deployed artifact comes from: the CMake Tools target this workspace selects, or `betelgeuz.deploy.artifactPath` for a file supplied by hand."
+          "scope": "resource"
         },
         "betelgeuz.deploy.remotePath": {
+          "markdownDescription": "Absolute path on the target where the artifact is deployed; its parent directory is created when missing. The application strategy also runs this file unless `betelgeuz.deploy.executable` names another.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.executable": {
+          "markdownDescription": "Absolute path of the program to launch on the target. Defaults to `betelgeuz.deploy.remotePath`. A structured launch setting \u2014 never a shell line.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.args": {
+          "markdownDescription": "Arguments passed to the launched program, one per entry. Encoded and quoted by the fixed launcher; never interpreted by a shell.",
           "type": "array",
           "items": {
             "type": "string"
@@ -241,30 +257,37 @@
           "scope": "resource"
         },
         "betelgeuz.deploy.cwd": {
+          "markdownDescription": "Working directory of the launched program. Defaults to the parent directory of `betelgeuz.deploy.remotePath`.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.environment": {
+          "markdownDescription": "Environment variables for the launched program, name to value. Values are treated as secrets: never echoed into logs, diagnostics, or error messages.",
           "type": "object",
           "scope": "resource"
         },
         "betelgeuz.deploy.fileMode": {
+          "markdownDescription": "Octal file mode applied to the deployed artifact, e.g. `0755`. Defaults to `0755`.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.runMode": {
+          "markdownDescription": "How the application runs: `foreground` ties it to the current connection and streams its output; `service` delegates to the systemd unit named by `betelgeuz.deploy.serviceUnit`. Defaults to `foreground`. `service` needs a target with systemd and a pre-provisioned unit.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.deploy.serviceUnit": {
+          "markdownDescription": "Name of the pre-provisioned systemd unit used by `runMode: service`. Betelgeuz never generates or edits unit files \u2014 the image provides them.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.attach.linux.remoteproc.instance": {
+          "markdownDescription": "The small core to control: its device-tree name (e.g. `cv181x-c906_1`), or `remoteprocN` as a convenience that resolves to a name at attach time and is re-validated on every reconnect.",
           "type": "string",
           "scope": "resource"
         },
         "betelgeuz.attach.linux.remoteproc.firmwarePath": {
+          "markdownDescription": "Where the firmware image lives on the target \u2014 inside the kernel's firmware search path (`/lib/firmware` by default). The staged file's *name* is what the kernel loader is asked for; a path with slashes is refused by the loader.",
           "type": "string",
           "scope": "resource"
         }
