@@ -24,6 +24,7 @@ import {
   onBoardCoreState,
   settingProblems,
   stubDialogs,
+  waitForApplicationState,
 } from "./helpers";
 
 if (process.env.BETELGEUZ_TEST_RPROC !== "1") {
@@ -74,12 +75,8 @@ if (process.env.BETELGEUZ_TEST_RPROC !== "1") {
     });
 
     test("reports the small-core state as execution state", async () => {
-      await vscode.commands.executeCommand("betelgeuz.status");
-
-      assert.ok(
-        messagesAt("info").some((text) => /Betelgeuz Linux small-core firmware: running/.test(text)),
-        `notifications: ${JSON.stringify(allMessages())}`
-      );
+      const reported = await waitForApplicationState(/running/);
+      assert.match(reported, /Linux small-core firmware.*running/, JSON.stringify(allMessages()));
       assert.deepEqual(messagesAt("error"), [], JSON.stringify(allMessages(), null, 2));
     });
 

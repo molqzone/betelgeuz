@@ -69,7 +69,7 @@ if (process.env.BETELGEUZ_TEST_DROP !== "1") {
       await vscode.commands.executeCommand("betelgeuz.start");
 
       const reported = await waitForApplicationState(/running/);
-      assert.match(reported, /target application: running/, JSON.stringify(allMessages()));
+      assert.match(reported, /Linux application.*running/, JSON.stringify(allMessages()));
       assert.deepEqual(messagesAt("error"), [], JSON.stringify(allMessages(), null, 2));
     });
 
@@ -83,7 +83,7 @@ if (process.env.BETELGEUZ_TEST_DROP !== "1") {
       // only add the expected transient failures to the captured messages.
       await sleep(5_000);
       const reported = await waitForApplicationState(/running/, 45_000);
-      assert.match(reported, /target application: running/, JSON.stringify(allMessages()));
+      assert.match(reported, /Linux application.*running/, JSON.stringify(allMessages()));
 
       // The "running" report must rest on target evidence — a probe of the
       // recorded pid over the new session — so the process itself is the check.
@@ -103,7 +103,7 @@ if (process.env.BETELGEUZ_TEST_DROP !== "1") {
       const gone = await onBoard(["/usr/bin/pgrep", "-f", "betelgeuz-e2e"]);
       assert.equal(gone, "", "the orphaned process survived the stop");
       const reported = await waitForApplicationState(/exited/, 10_000);
-      assert.match(reported, /target application: exited/, JSON.stringify(allMessages()));
+      assert.match(reported, /Linux application.*exited/, JSON.stringify(allMessages()));
       assert.deepEqual(messagesAt("error"), [], JSON.stringify(allMessages(), null, 2));
     });
 

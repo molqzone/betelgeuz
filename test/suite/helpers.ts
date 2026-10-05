@@ -195,22 +195,25 @@ export function settingProblems(): Array<string> {
 }
 
 /** Polls the status command until the run reaches the wanted state: the channel
- * closes after the command has already reported running. */
+ * closes after the command has already reported running. Only the messages
+ * this command produced are considered — earlier toasts (a deploy, a
+ * reconnect) must never satisfy the state being waited for — so the copy can
+ * change without the selection going stale. */
 export async function waitForApplicationState(
   pattern: RegExp,
   deadlineMs = 30_000
 ): Promise<string> {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
+    const before = messagesAt("info").length;
     await vscode.commands.executeCommand("betelgeuz.status");
-    const latest = messagesAt("info")
-      .filter((text) => /target application:/.test(text))
-      .pop();
-    if (latest !== undefined && pattern.test(latest)) {
-      return latest;
+    const fresh = messagesAt("info").slice(before);
+    const reported = fresh.filter((text) => pattern.test(text)).pop();
+    if (reported !== undefined) {
+      return reported;
     }
     if (Date.now() > deadline) {
-      return latest ?? "no status reported";
+      return fresh.pop() ?? "no status reported";
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }

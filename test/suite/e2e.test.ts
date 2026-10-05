@@ -70,7 +70,7 @@ if (SPECIAL_RUN) {
     await vscode.commands.executeCommand("betelgeuz.start");
 
     const reported = await waitForApplicationState(/exited/);
-    assert.match(reported, /target application: exited/, `notifications: ${JSON.stringify(allMessages())}`);
+    assert.match(reported, /Linux application.*exited/, `notifications: ${JSON.stringify(allMessages())}`);
     assert.deepEqual(messagesAt("error"), [], JSON.stringify(allMessages(), null, 2));
   });
 

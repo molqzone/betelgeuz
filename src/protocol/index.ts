@@ -104,9 +104,10 @@ export type RunOutcome = {
 /**
  * Strategy-reported target state. `state` is strategy-owned vocabulary — the
  * foreground application strategy reports `exited`/`running`/`stopped`, the
- * small-core strategy reports the remoteproc lifecycle — rendered as-is by
- * the surface. `outcome` and `detail` are optional strategy detail: the
- * process outcome for a foreground run, or the selected firmware.
+ * small-core strategy reports the remoteproc lifecycle — and the surface
+ * renders it in a short sentence, falling back to the reported word for any
+ * vocabulary it does not know. `outcome` and `detail` are optional strategy
+ * detail: the process outcome for a foreground run, or the selected firmware.
  */
 export type StatusResult = {
   detail?: string;

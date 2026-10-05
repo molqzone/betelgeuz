@@ -7,7 +7,6 @@ import type {
   ConnectionState,
   CredentialMaterial,
   LogsParams,
-  RunOutcome,
   StatusResult,
 } from "../protocol";
 import { ATTACH_STRATEGY_KEY, TARGET_PROFILE_KEY } from "../protocol";
@@ -23,6 +22,7 @@ import {
 import { SshClient } from "../transport/ssh";
 import { clearCredential, loadCredential } from "./credentials";
 import { phaseLabel, remediationFor } from "./remediation";
+import { describeOutcome, statusSentence } from "./status";
 import { runReconnect } from "../reconnect";
 import {
   persistAttach,
@@ -165,7 +165,7 @@ export class ExtensionController implements vscode.Disposable {
     );
     if (choices.length === 0) {
       const action = await vscode.window.showWarningMessage(
-        "No Betelgeuz SSH profiles are configured.",
+        "No SSH profiles are configured yet. Add one to connect to a board.",
         "Open Settings"
       );
       if (action === "Open Settings") {
@@ -237,7 +237,9 @@ export class ExtensionController implements vscode.Disposable {
   private async connect(folder: vscode.WorkspaceFolder): Promise<void> {
     const runtime = this.runtime(folder);
     if (runtime.state === "attached") {
-      await vscode.window.showInformationMessage("Betelgeuz is already connected.");
+      await this.toast(
+        `Betelgeuz is already connected to ${runtime.attach?.profile.host ?? "the target"}.`
+      );
       return;
     }
     // A user-initiated connect supersedes any reconnect in flight.
@@ -331,8 +333,10 @@ export class ExtensionController implements vscode.Disposable {
         this.log(
           `Attached ${attach.profile.username}@${attach.profile.host}:${attach.profile.port} using ${attach.strategyId}; host key ${attach.identity.hostKeyFingerprint}`
         );
-        await vscode.window.showInformationMessage(
-          `Betelgeuz connected to ${attach.profile.host}.`
+        const model = attach.identity.descriptor.model ?? "unknown board";
+        await this.toast(
+          `Betelgeuz connected to ${attach.profile.host} — ${model} via ${attach.strategyId}.`,
+          ["Deploy", () => vscode.commands.executeCommand("betelgeuz.deploy")]
         );
         await this.validateStrategy(folder, runtime, epoch);
       } finally {
@@ -428,18 +432,23 @@ export class ExtensionController implements vscode.Disposable {
     const verified = runtime.attach === undefined ? runtime.lastVerified :
       persistedAttachFrom(runtime.attach);
     if (verified === undefined) {
-      await vscode.window.showInformationMessage(
-        "No target identity has been verified for this workspace."
+      await this.toast(
+        "No target has been verified for this workspace yet.",
+        ["Select SSH Target", () => vscode.commands.executeCommand("betelgeuz.selectSshTarget")]
       );
       return;
     }
-    const state = runtime.state === "attached" ? "Connected" : "Offline";
+    const state = runtime.state === "attached" ? "connected" : "offline";
     const model = verified.identity.descriptor.model ?? "unknown board";
+    const who = `${verified.profile.username}@${verified.profile.host}`;
     this.log(
       `Inspect attach: ${state}; ${verified.profile.host}:${verified.profile.port}; ${verified.strategyId}; ${model}; verified ${verified.verifiedAt}`
     );
-    await vscode.window.showInformationMessage(
-      `${state}: ${verified.profile.host}:${verified.profile.port} - ${verified.strategyId} - ${model}`
+    await this.toast(
+      `Betelgeuz target: ${model} at ${who} — ${state}, verified ${verified.verifiedAt}.`,
+      runtime.state === "attached"
+        ? ["Deploy", () => vscode.commands.executeCommand("betelgeuz.deploy")]
+        : ["Connect", () => vscode.commands.executeCommand("betelgeuz.connect")]
     );
   }
 
@@ -475,8 +484,9 @@ export class ExtensionController implements vscode.Disposable {
       )
     );
     this.log(`Deployed ${artifact.path} to ${result.remotePath}`);
-    await vscode.window.showInformationMessage(
-      `Betelgeuz deployed ${result.remotePath} with ${descriptor?.label ?? strategyId}.`
+    await this.toast(
+      `Betelgeuz deployed ${artifact.targetName} to ${result.remotePath}.`,
+      ["Start", () => vscode.commands.executeCommand("betelgeuz.start")]
     );
   }
 
@@ -494,7 +504,7 @@ export class ExtensionController implements vscode.Disposable {
       return false;
     }
     const answer = await vscode.window.showWarningMessage(
-      `The ${descriptor.label} target is ${status.state} and will be stopped to deploy.`,
+      `The ${descriptor.label} target is ${status.state}. Stop it and deploy the new build?`,
       { modal: true },
       "Stop and Deploy"
     );
@@ -520,7 +530,12 @@ export class ExtensionController implements vscode.Disposable {
       )
     );
     runtime.run = run;
-    this.log(`Started ${strategyDescriptor(strategyId)?.label ?? "target"} (${run.runId})`);
+    const label = strategyDescriptor(strategyId)?.label ?? "target";
+    this.log(`Started ${label} (${run.runId})`);
+    await this.toast(
+      `Betelgeuz started ${label}. Output is streaming to the Betelgeuz channel.`,
+      ["View Output", () => Promise.resolve(this.output.show(true))]
+    );
     this.trackRun(runtime, run);
   }
 
@@ -539,6 +554,14 @@ export class ExtensionController implements vscode.Disposable {
     runtime.run = undefined;
     const label = strategyDescriptor(strategyId)?.label ?? "target";
     this.log(`Stopped ${label}${outcome?.signal === undefined ? "" : ` by ${outcome.signal}`}`);
+    if (outcome === undefined) {
+      await this.toast(`Betelgeuz: ${label} was not running.`);
+    } else {
+      await this.toast(
+        `Betelgeuz stopped ${label} (${describeOutcome(outcome)}).`,
+        ["Start", () => vscode.commands.executeCommand("betelgeuz.start")]
+      );
+    }
     this.refreshStatus();
   }
 
@@ -557,7 +580,12 @@ export class ExtensionController implements vscode.Disposable {
       (chunk) => this.logOutput(chunk.stream, chunk.bytes)
     );
     runtime.run = run;
-    this.log(`Restarted ${strategyDescriptor(strategyId)?.label ?? "target"} (${run.runId})`);
+    const label = strategyDescriptor(strategyId)?.label ?? "target";
+    this.log(`Restarted ${label} (${run.runId})`);
+    await this.toast(
+      `Betelgeuz restarted ${label}. Output is streaming to the Betelgeuz channel.`,
+      ["View Output", () => Promise.resolve(this.output.show(true))]
+    );
     this.trackRun(runtime, run);
   }
 
@@ -596,10 +624,14 @@ export class ExtensionController implements vscode.Disposable {
       configuration,
     });
     const label = descriptor?.label ?? "target";
-    const detail = status.detail === undefined ? "" : ` (${status.detail})`;
-    this.log(`Target status: ${status.state}${detail}`);
-    await vscode.window.showInformationMessage(
-      `Betelgeuz ${label}: ${status.state}.`
+    this.log(
+      `Target status: ${status.state}${status.detail === undefined ? "" : ` (${status.detail})`}`
+    );
+    await this.toast(
+      statusSentence(label, status),
+      status.state === "running"
+        ? ["Stop", () => vscode.commands.executeCommand("betelgeuz.stop")]
+        : ["Start", () => vscode.commands.executeCommand("betelgeuz.start")]
     );
   }
 
@@ -651,7 +683,7 @@ export class ExtensionController implements vscode.Disposable {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) {
       await vscode.window.showWarningMessage(
-        "Open a workspace folder before connecting a target."
+        "Betelgeuz attaches one target per workspace folder. Open a folder and try again."
       );
       return undefined;
     }
@@ -904,7 +936,7 @@ export class ExtensionController implements vscode.Disposable {
       : BetelgeuzError.wrapUnexpected(phase, error);
     this.logFailure(structured, structured.phase);
     if (structured.code === "operation.cancelled") {
-      await vscode.window.showInformationMessage("Betelgeuz connection cancelled.");
+      await this.toast("Betelgeuz cancelled the operation.");
       return;
     }
     const remediation = remediationFor(structured);
@@ -949,6 +981,23 @@ export class ExtensionController implements vscode.Disposable {
     }
   }
 
+  /** A success message that already offers the next step: what happened, and
+   *  the one action that follows from it (plan §7's "what happened and what to
+   *  do next"), instead of a past-tense sentence and nothing else. */
+  private async toast(
+    message: string,
+    ...actions: Array<[label: string, run: () => unknown]>
+  ): Promise<void> {
+    const chosen = await vscode.window.showInformationMessage(
+      message,
+      ...actions.map(([label]) => label)
+    );
+    const action = actions.find(([label]) => label === chosen);
+    if (action !== undefined) {
+      await action[1]();
+    }
+  }
+
   /** A button whose command is not installed is worse than no button: it would
    *  fail on click. The one conditional command is CMake Tools' build. */
   private commandAvailable(button: { requiresExtension?: string }): boolean {
@@ -985,17 +1034,4 @@ function statusLabel(state: ConnectionState): string {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.stack ?? error.message : String(error);
-}
-
-/** Renders a run outcome for the log — including its own gaps: an outcome
- *  with neither status nor signal is an exit whose details were never
- *  observed, and the log says exactly that. */
-function describeOutcome(outcome: RunOutcome): string {
-  if (outcome.status !== undefined) {
-    return `exit status ${outcome.status}`;
-  }
-  if (outcome.signal !== undefined) {
-    return `terminating signal ${outcome.signal}`;
-  }
-  return "exit status not observed";
 }
