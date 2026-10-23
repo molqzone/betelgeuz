@@ -271,16 +271,6 @@
           "type": "string",
           "scope": "resource"
         },
-        "betelgeuz.deploy.runMode": {
-          "markdownDescription": "How the application runs: `foreground` ties it to the current connection and streams its output; `service` delegates to the systemd unit named by `betelgeuz.deploy.serviceUnit`. Defaults to `foreground`. `service` needs a target with systemd and a pre-provisioned unit.",
-          "type": "string",
-          "scope": "resource"
-        },
-        "betelgeuz.deploy.serviceUnit": {
-          "markdownDescription": "Name of the pre-provisioned systemd unit used by `runMode: service`. Betelgeuz never generates or edits unit files \u2014 the image provides them.",
-          "type": "string",
-          "scope": "resource"
-        },
         "betelgeuz.attach.linux.remoteproc.instance": {
           "markdownDescription": "The small core to control: its device-tree name (e.g. `cv181x-c906_1`), or `remoteprocN` as a convenience that resolves to a name at attach time and is re-validated on every reconnect.",
           "type": "string",

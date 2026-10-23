@@ -21,8 +21,6 @@ import {
   DEPLOY_FILE_MODE_KEY,
   DEPLOY_LOCAL_TARGET_KEY,
   DEPLOY_REMOTE_PATH_KEY,
-  DEPLOY_RUN_MODE_KEY,
-  DEPLOY_SERVICE_UNIT_KEY,
   DEPLOY_SOURCE_KEY,
   FIXED_CONFIG_KEYS,
   PROFILES_KEY,
@@ -58,8 +56,6 @@ describe("settings shapes", () => {
         "betelgeuz.deploy.cwd",
         "betelgeuz.deploy.environment",
         "betelgeuz.deploy.fileMode",
-        "betelgeuz.deploy.runMode",
-        "betelgeuz.deploy.serviceUnit",
       ]
     `);
     expect(CONFIG_KEY_PATTERNS).toEqual(["betelgeuz.target.", "betelgeuz.attach."]);
@@ -125,8 +121,6 @@ describe("settings shapes", () => {
       DEPLOY_CWD_KEY,
       DEPLOY_ENVIRONMENT_KEY,
       DEPLOY_FILE_MODE_KEY,
-      DEPLOY_RUN_MODE_KEY,
-      DEPLOY_SERVICE_UNIT_KEY,
     ]).toEqual([
       "betelgeuz.deploy.localTarget",
       "betelgeuz.deploy.artifactPath",
@@ -138,8 +132,6 @@ describe("settings shapes", () => {
       "betelgeuz.deploy.cwd",
       "betelgeuz.deploy.environment",
       "betelgeuz.deploy.fileMode",
-      "betelgeuz.deploy.runMode",
-      "betelgeuz.deploy.serviceUnit",
     ]);
   });
 

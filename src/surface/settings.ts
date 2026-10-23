@@ -32,8 +32,6 @@ import {
   DEPLOY_EXECUTABLE_KEY,
   DEPLOY_FILE_MODE_KEY,
   DEPLOY_REMOTE_PATH_KEY,
-  DEPLOY_RUN_MODE_KEY,
-  DEPLOY_SERVICE_UNIT_KEY,
   type DeploySource,
 } from "../protocol";
 import { isBetelgeuzError } from "../errors";
@@ -243,14 +241,6 @@ export function readApplicationConfiguration(
     DEPLOY_EXECUTABLE_KEY
   );
   const fileMode = optionalString(config.get<unknown>(DEPLOY_FILE_MODE_KEY), DEPLOY_FILE_MODE_KEY);
-  const runMode = optionalString(config.get<unknown>(DEPLOY_RUN_MODE_KEY), DEPLOY_RUN_MODE_KEY);
-  if (runMode !== undefined && runMode !== "foreground" && runMode !== "service") {
-    throw invalidSetting(DEPLOY_RUN_MODE_KEY, "must be foreground or service");
-  }
-  const serviceUnit = optionalString(
-    config.get<unknown>(DEPLOY_SERVICE_UNIT_KEY),
-    DEPLOY_SERVICE_UNIT_KEY
-  );
   const environment = optionalStringMap(
     config.get<unknown>(DEPLOY_ENVIRONMENT_KEY),
     DEPLOY_ENVIRONMENT_KEY
@@ -262,8 +252,6 @@ export function readApplicationConfiguration(
     executable: executable ?? undefined,
     fileMode: fileMode ?? undefined,
     remotePath,
-    runMode: runMode ?? undefined,
-    serviceUnit: serviceUnit ?? undefined,
   };
 }
 

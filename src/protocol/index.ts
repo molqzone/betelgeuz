@@ -30,8 +30,6 @@ export {
   DEPLOY_REMOTE_PATH_KEY,
   DEPLOY_SOURCE_KEY,
   DEPLOY_SOURCES,
-  DEPLOY_RUN_MODE_KEY,
-  DEPLOY_SERVICE_UNIT_KEY,
   FIXED_CONFIG_KEYS,
   PROFILES_KEY,
   TARGET_INLINE_PREFIX,
@@ -88,8 +86,6 @@ export type ApplicationConfiguration = {
   executable?: string;
   fileMode?: string | number;
   remotePath: string;
-  runMode?: "foreground" | "service";
-  serviceUnit?: string;
   stopGraceMs?: number;
 };
 

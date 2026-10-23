@@ -28,11 +28,12 @@ The Microsoft `Remote - SSH` extension is not a Betelgeuz runtime dependency. It
 - A stable artifact contract between CMake Tools and all deployment strategies.
 - A mockable transport layer so the core behavior can be tested without hardware.
 
-The MVP scope is staged inside the first release: foreground application execution is the
-Phase 1 baseline, while systemd service mode is the optional Phase 4 capability. Acceptance
-criteria that mention a service are conditional on the target exposing a supported service
-manager and a pre-provisioned unit; a board without one remains a supported foreground-only
-target.
+The first release ships foreground application execution only: a run is tied to
+the SSH exec channel, its output is streamed, and its outcome is reported.
+Service-managed execution — persistence, restart policy, and supervision by a
+target service manager such as systemd — is deferred (see §12). A board without
+a service manager is fully supported; an application that must outlive a session
+runs under a service the user provisions on the target, outside Betelgeuz.
 
 ### Follow-on capability area
 
@@ -132,7 +133,7 @@ The resolved hardware object is a target descriptor, not a global capability inv
 3. **Hardware descriptor**: query a small, read-only descriptor from the target, preferably a board-provided `/etc/betelgeuz/device.json` with fields such as `deviceId`, `boardId`, `boardRevision`, `socId`, `compatible`, `model`, and `protocolVersion`. If that file is absent, use standard Linux sources such as device-tree model/compatible and a stable serial or machine identity where available, and mark missing fields as unknown. Device-tree `compatible` entries remain separate values so a configured SoC pin can match an individual entry. The probe has a 10-second deadline; on expiry Betelgeuz requests command termination and closes the SSH session. On stock vendor and community images the descriptor file is normally absent, so the common case is device-tree derived metadata combined with a pinned host key as the authoritative identity; a user who wants a stable `deviceId` can provision the descriptor file themselves following the documented how-to.
 4. **Attach binding**: compare the descriptor and SSH identity with the resolved target profile, then create the active attach object for the user-selected strategy. The target profile may pin `deviceId`, `boardId`, `socId`, or host key; an unpinned field is informational and must not silently override a pinned field. If no stable `deviceId` is available, require a pinned host key and show that the target is identified by transport identity only. Binding does not inspect target interfaces or infer supported strategies. If no strategy has been configured, the picker offers the strategies implemented by the installed Betelgeuz version, grouped by role (for example, big-core application or small-core firmware); selecting one immediately creates the attach after identity verification. The selected strategy probes its own required interface when its operations are prepared or run and returns an actionable unsupported-target diagnostic if needed. Future strategies such as the K230 loader are not offered before they are implemented. Re-running `Select SSH Target` allows the user to choose a different strategy.
 
-The descriptor is untrusted metadata until the SSH host key has been verified. It is used for board identity and diagnostics, not to infer strategy compatibility or every capability of the chip. After attach, the selected strategy performs its own target probe: `linux.ssh-app` checks application paths and process/service controls, while `linux.remoteproc` checks its configured small-core instance and controls.
+The descriptor is untrusted metadata until the SSH host key has been verified. It is used for board identity and diagnostics, not to infer strategy compatibility or every capability of the chip. After attach, the selected strategy performs its own target probe: `linux.ssh-app` checks application paths and process controls, while `linux.remoteproc` checks its configured small-core instance and controls.
 
 ## 4. Target Board Contract
 
@@ -162,7 +163,7 @@ Endpoint resolution alone is not sufficient for identifying multiple boards. A s
 The SSH application strategy needs a target runtime contract in addition to an SSH connection.
 The target probe records the kernel machine and endianness, ELF class and ABI expectations,
 libc family/version when discoverable, dynamic loader path, writable filesystem status, and the
-available process/service controls. An ELF artifact is accepted only when its machine, class,
+available process controls. An ELF artifact is accepted only when its machine, class,
 endianness, ABI and interpreter are compatible with that probe; a raw binary must declare its
 format and architecture in the workspace configuration. The probe may report unknown libc
 details, but an explicitly incompatible interpreter or ABI is a hard failure. This avoids
@@ -197,10 +198,10 @@ Foreground lifetime is an explicit strategy policy. The core records the remote 
 group, observes channel closure, and reconciles the process on reconnect; it must not infer an
 exit from a lost SSH channel alone. A target capability probe determines whether the configured
 disconnect policy can terminate the process group reliably. If it cannot, the core reports the
-runtime as potentially orphaned and requires service mode or an explicit cleanup action rather
-than claiming that foreground execution is connection-scoped. Service mode is limited to a
-pre-provisioned systemd unit in the first implementation, with its user/system scope, restart
-policy, environment, and log source probed before the command is enabled.
+runtime as potentially orphaned and requires an explicit cleanup action rather than claiming
+that foreground execution is connection-scoped. Execution that must outlive a session — restart
+policy, supervision, persistent logs — belongs to a service manager the user provisions on the
+target; Betelgeuz does not manage it in the first release (see §12).
 
 ## 5. Workspace Configuration
 
@@ -219,9 +220,7 @@ A workspace's attach configuration is workspace-scoped:
   "betelgeuz.deploy.args": [],
   "betelgeuz.deploy.cwd": "/opt",
   "betelgeuz.deploy.environment": {},
-  "betelgeuz.deploy.fileMode": "0755",
-  "betelgeuz.deploy.runMode": "foreground",
-  "betelgeuz.deploy.serviceUnit": "my_app.service"
+  "betelgeuz.deploy.fileMode": "0755"
 }
 ```
 
@@ -250,7 +249,7 @@ The core resolves the named profile first, then overlays non-empty inline target
 
 `keepaliveSeconds` defaults to `30`. `proxyChain` is an ordered list of typed SSH hops; each hop has its own endpoint, credential reference, and required pinned host key. Arbitrary proxy commands and unpinned proxy hops are rejected. Frontends supply one-use password/passphrase values keyed by credential reference so each hop can use distinct protected credentials.
 
-The SSH application strategy supports two run modes. `foreground` starts the program in an SSH exec channel, streams its output, and ties the session to the current connection. `service` delegates persistence, restart policy, and status to a target service manager such as systemd, so the process can survive frontend or core shutdown and SSH loss. A service manager is a target-side facility, not VS Code Server. In `service` mode, `betelgeuz.deploy.serviceUnit` names a unit already provisioned by the target image or the user; Betelgeuz does not generate, install, or modify service unit files.
+The SSH application strategy has one run mode: the program starts in an SSH exec channel, streams its output, and ties the session to the current connection. Service-managed execution is deferred (see §12); a service manager is a target-side facility, not VS Code Server, and Betelgeuz does not generate, install, or modify service unit files.
 
 Strategy-specific attach configuration lives in the same settings namespace under `betelgeuz.attach.<strategy>.*`, so each workspace selects its own strategy and target. A firmware workspace could use:
 
@@ -263,7 +262,7 @@ Strategy-specific attach configuration lives in the same settings namespace unde
 }
 ```
 
-The `betelgeuz.deploy.localTarget` entry identifies the target selected in CMake Tools whose existing artifact is consumed; it does not configure or invoke a Betelgeuz build step. `betelgeuz.deploy.source` selects the source: `cmake` (the default) resolves that artifact through CMake Tools, and `manual` uses `betelgeuz.deploy.artifactPath` to name the file directly — a workspace-relative path resolves against the workspace folder, and the setting may name the directory a build writes into, in which case exactly one ELF is deployed. When the setting is unset the workspace chooses the artifact once through a file dialog and that choice is remembered per workspace folder; a configured path always wins over what was remembered. `executable`, `args`, `cwd`, `environment`, and `fileMode` are structured launch/deploy settings; they are never concatenated into an arbitrary shell command. In service mode, the pre-provisioned unit owns the effective command and environment, while these settings are used for foreground mode only. The `betelgeuz.deploy.artifact` key for multi-artifact targets arrives in a later phase; the MVP deploys only targets with exactly one artifact. Each strategy validates only its own keys under `betelgeuz.attach.<strategy>.*`; keys belonging to another strategy are ignored.
+The `betelgeuz.deploy.localTarget` entry identifies the target selected in CMake Tools whose existing artifact is consumed; it does not configure or invoke a Betelgeuz build step. `betelgeuz.deploy.source` selects the source: `cmake` (the default) resolves that artifact through CMake Tools, and `manual` uses `betelgeuz.deploy.artifactPath` to name the file directly — a workspace-relative path resolves against the workspace folder, and the setting may name the directory a build writes into, in which case exactly one ELF is deployed. When the setting is unset the workspace chooses the artifact once through a file dialog and that choice is remembered per workspace folder; a configured path always wins over what was remembered. `executable`, `args`, `cwd`, `environment`, and `fileMode` are structured launch/deploy settings; they are never concatenated into an arbitrary shell command. The `betelgeuz.deploy.artifact` key for multi-artifact targets arrives in a later phase; the MVP deploys only targets with exactly one artifact. Each strategy validates only its own keys under `betelgeuz.attach.<strategy>.*`; keys belonging to another strategy are ignored.
 
 Passwords, private keys, and private-key passphrases must not be stored in ordinary workspace settings. Use VS Code SecretStorage or the frontend's equivalent protected store for credential material and host-key enrollment data. The core receives only the credential it needs for the active session.
 
@@ -369,7 +368,7 @@ The initial catalog:
 | `rproc.state-timeout` | lifecycle | state wait timed out; carries last observed state | inspect trace output | yes |
 | `debug.gdbserver-missing` | debug | `gdbserver` absent on the target | install `gdbserver` (or copy a transient static one) | no |
 | `runtime.service-manager-missing` | lifecycle | configured service mode has no supported systemd unit or manager | use foreground mode or provision the unit | no |
-| `runtime.orphan-risk` | lifecycle | foreground disconnect policy cannot prove process termination | use service mode or run explicit cleanup | no |
+| `runtime.orphan-risk` | lifecycle | foreground disconnect policy cannot prove process termination | run an explicit cleanup | no |
 | `internal.unexpected` | any | unexpected failure; carries phase and cause | show log | no |
 
 Error presentation follows Remote-SSH semantics that users already know: failures are labelled by phase (resolve profile, connect, authenticate, verify identity, deploy, lifecycle, debug — mirroring Remote-SSH's resolve/connect/authenticate/start-server labels); retriable failures show bounded reconnect attempts and stop on explicit disconnect; every surfaced error offers a path to the log with the raw transport output; host-key prompts show the fingerprint and are never auto-accepted. The classic SSH failure patterns users recognize from Remote-SSH output — permission denied, connection refused or timed out, host key verification failed, too many authentication failures — map onto the `ssh.*` codes above; because the transport is `ssh2`, that mapping lives at the transport boundary over library error events instead of parsing `ssh(1)` output.
@@ -401,13 +400,12 @@ This section is the application strategy's specification, standing as a peer of 
 
 No VS Code Server is needed to run a target process. The core opens SSH exec channels for commands and keeps a channel open only when it is streaming a foreground process.
 
-- **Foreground mode** streams stdout and stderr to the Betelgeuz OutputChannel and reports the exit code or terminating signal. The start command is a fixed template that `exec`s the program directly, so it stays the command of the exec channel: the server has already put that command in its own session and process group, its exit status is the run's outcome, and the run ends when the channel closes. Launches never detach (`setsid`, `nohup`, backgrounding) — a detached program becomes a grandchild the channel can neither report nor signal. `Stop` signals that group — `SIGTERM`, a configurable grace period (five seconds by default), then `SIGKILL` — and the reported outcome names the terminating signal; broad process-name matching is never used. A lost SSH channel triggers reconciliation and the configured disconnect policy; the core does not assume that the process received `SIGHUP` or already exited. If the target cannot prove cleanup, it reports `runtime.orphan-risk` and requires service mode or explicit cleanup. Exit reporting distinguishes a normal exit code, a crash signal, and a user-requested stop.
-- **Service mode** starts, stops, restarts, and inspects the application through a target service manager. Logs come from the service manager or a configured log source. Service mode is a conditional capability requiring a supported service manager on the target image, systemd in the first implementation; images without one, such as busybox-based builds, use foreground mode.
-- **Fetch recent output** follows the VS Code scrollback model: output history lives host-side, in the core's per-session ring buffer (the last lines of the current and previous foreground session, lost on core restart), while in service mode it tails the service manager's log source. Persistent remote log files and journal integration remain a Phase 7 (Optimization) item.
-- After an SSH disconnect, the strategy reconnects and queries process or service state before updating the UI. It must not infer that a process stopped merely because its SSH channel closed.
-- A running Linux application process is execution state, not proof of application health. Optional health probes, heartbeats, or service health may provide stronger evidence.
+- **Foreground mode** streams stdout and stderr to the Betelgeuz OutputChannel and reports the exit code or terminating signal. The start command is a fixed template that `exec`s the program directly, so it stays the command of the exec channel: the server has already put that command in its own session and process group, its exit status is the run's outcome, and the run ends when the channel closes. Launches never detach (`setsid`, `nohup`, backgrounding) — a detached program becomes a grandchild the channel can neither report nor signal. `Stop` signals that group — `SIGTERM`, a configurable grace period (five seconds by default), then `SIGKILL` — and the reported outcome names the terminating signal; broad process-name matching is never used. A lost SSH channel triggers reconciliation and the configured disconnect policy; the core does not assume that the process received `SIGHUP` or already exited. If the target cannot prove cleanup, it reports `runtime.orphan-risk` and requires an explicit cleanup action. Exit reporting distinguishes a normal exit code, a crash signal, and a user-requested stop.
+- **Fetch recent output** follows the VS Code scrollback model: output history lives host-side, in the core's per-session ring buffer (the last lines of the current and previous foreground session, lost on core restart). Persistent remote log files and journal integration remain a Phase 7 (Optimization) item.
+- After an SSH disconnect, the strategy reconnects and queries process state before updating the UI. It must not infer that a process stopped merely because its SSH channel closed.
+- A running Linux application process is execution state, not proof of application health. Optional health probes or heartbeats may provide stronger evidence.
 
-The first SSH application implementation should prefer foreground mode and systemd service mode. A custom detached launcher is a later option and must persist an unambiguous process identity, such as a PID file tied to the deployed artifact, before it can support stop or status operations. Do not use broad process-name matching such as `pkill -f` as the default control path.
+The first SSH application implementation is foreground mode. A custom detached launcher is a later option and must persist an unambiguous process identity, such as a PID file tied to the deployed artifact, before it can support stop or status operations. Do not use broad process-name matching such as `pkill -f` as the default control path.
 
 ### The small-core strategy: `linux.remoteproc`
 
@@ -470,10 +468,9 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Define the attach-object and strategy contract, configuration schema, and normalized artifact record.
 - Define the SSH target profile, hardware descriptor, and attach identity schemas.
 - Define the Linux userspace runtime probe and compatibility record: machine, ELF ABI/class,
-  endianness, libc/interpreter, writable/noexec filesystem checks, process-group behavior, and
-  supported service-manager scope.
+  endianness, libc/interpreter, writable/noexec filesystem checks, and process-group behavior.
 - Define the Tier 1 capability matrix for Lichee RVNano's supported Linux images (BusyBox versus
-  full userland, glibc versus musl, systemd versus foreground-only, and supported architectures)
+  full userland, glibc versus musl, and supported architectures)
   and the exact probe files/commands for each row. Other board families are outside Tier 1.
 - Define VSIX packaging and integrity checks for the native core binaries, including executable
   permissions on Linux, missing-core recovery, and upgrade compatibility.
@@ -502,15 +499,15 @@ Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact 
 - Offer the implemented `linux.ssh-app` strategy for the first attach flow. Attach creation verifies
   board identity only; the strategy validates its own runtime interfaces before its operations.
 
-First working slice acceptance: from the VS Code adapter, `Connect` → host-key verification → descriptor read → SFTP upload to a scratch path → structured exec → streamed stdout → `Stop`, against the Tier 1 board. The slice consumes a manually supplied artifact record; CMake handoff (Phase 2), reconciliation depth (Phase 3), service mode (Phase 4), `linux.remoteproc` (Phase 5), and debug (Phase 6) are explicitly out of scope.
+First working slice acceptance: from the VS Code adapter, `Connect` → host-key verification → descriptor read → SFTP upload to a scratch path → structured exec → streamed stdout → `Stop`, against the Tier 1 board. The slice consumes a manually supplied artifact record; CMake handoff (Phase 2), reconciliation depth (Phase 3), `linux.remoteproc` (Phase 5), and debug (Phase 6) are explicitly out of scope.
 
 Implementation status: the current Phase 1 slice provides the manual artifact path, same-session
 SFTP staging and atomic rename, configured mode application, structured foreground launch, bounded
 host-side output history, streamed output, exit status, stop escalation, restart, status, and logs
 commands. The current deploy path performs bounded ELF machine/class/endianness/interpreter
 checks and a fixed target preflight for writable, free-space, and `noexec` state before staging;
-reconnect reconciliation and systemd service mode remain outstanding within the later Phase 3/4
-acceptance gates. The first working slice acceptance has run against the Tier 1 board over the
+reconnect reconciliation remained outstanding within the later Phase 3 acceptance gate. The
+first working slice acceptance has run against the Tier 1 board over the
 end-to-end harness (`test/suite/e2e.test.ts`, run through `npm run test:e2e` with a board and
 artifact from the environment): host-key enrollment, descriptor read, deploy, foreground run with
 streamed output and exit status, stop, and disconnect all passed against a CV181x board running
@@ -565,10 +562,16 @@ group (`TERM`, exit proven by probe), with no error notifications and no
 window reload. A drop while a deploy upload is still in flight remains to be
 scripted under the same gate.
 
-### Phase 4: Service mode (systemd)
+### Phase 4: Service mode (systemd) — deferred
 
-- Add optional systemd service-managed run mode when the target service manager and pre-provisioned unit pass capability checks; expose a clear fallback to foreground mode otherwise.
-- Service logs come from the service manager; service-managed applications remain controllable after the core disconnects.
+Not built: the first release ships foreground execution only, and the
+`betelgeuz.deploy.runMode` / `betelgeuz.deploy.serviceUnit` settings were
+withdrawn rather than left selecting an unimplemented mode. The decision and
+its trigger are recorded in §12. If it is ever built, the starting scope is a
+manager-and-unit existence probe, templated `systemctl`
+start/stop/restart/status, and the service manager's log source;
+restart-policy and environment introspection stay deferred, and foreground
+mode remains the baseline for every target.
 
 ### Phase 5: Small-core strategy (`linux.remoteproc`)
 
@@ -738,8 +741,7 @@ The MVP is complete when a developer can:
 6. Start, stop, and restart the active target through the selected strategy.
 7. See remote stdout and stderr in the VS Code output panel.
 8. Recover from a temporary SSH failure without restarting VS Code: after a drop the core reconnects with bounded backoff, re-verifies identity, re-queries target state through `inspect`, and restores the UI — never inferring state from the dead connection.
-9. See foreground output and exit status, or inspect service status/logs after reconnecting.
-   Service status/logs are required only when the selected target has passed the systemd capability probe.
+9. See foreground output and exit status, and inspect the target state after reconnecting.
 10. Receive clear errors for an unresolved SSH profile, authentication failure, host-key mismatch, descriptor mismatch, upload failure, and remote process failure.
 11. A future editor adapter can perform the same attach and deploy operations through the documented core protocol without reimplementing SSH.
 
@@ -757,7 +759,7 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 
 - Host platforms: **Windows and Linux** development hosts. The extension is pure TypeScript with no per-platform binaries; the platform surface lives in the `ssh2` and (follow-on) `serialport` libraries.
 - Core and transport: a TypeScript core module layer with exactly one transport for the MVP, `ssh2`; the serial-console transport is a planned follow-on peer (`serialport`, see the follow-on capability area), not a second SSH client. There is no external SSH client, configuration parser, agent integration, or fallback transport; unsupported authentication or proxy capabilities fail with explicit diagnostics. Remote - SSH extension internals are not a supported dependency. Betelgeuz owns target profiles, credentials, host-key pins, and proxy configuration.
-- Run modes: `foreground` plus `service` mode against a unit provisioned on the target. A PID-file launcher and board-side helpers remain deferred, and a custom detached launcher must persist an unambiguous process identity before it can support stop or status operations.
+- Run modes: `foreground` only in the first release. A PID-file launcher and board-side helpers remain deferred, and a custom detached launcher must persist an unambiguous process identity before it can support stop or status operations. Service-managed execution is deferred — see the service-mode entry in the deferred block.
 - Configuration model: two layers — a shareable user-level `betelgeuz.profiles` entry holding the direct SSH endpoint, credential reference, and identity pins, and workspace-scoped `betelgeuz.attach.*` / `betelgeuz.deploy.*` keys. The key list is owned by the config module (`src/protocol/config`); implemented strategy keys use the full strategy ID as their prefix. The first small-core strategy uses `betelgeuz.attach.linux.remoteproc.instance` and `betelgeuz.attach.linux.remoteproc.firmwarePath`.
 - Artifact and firmware validation: host-side format and architecture checks (ELF header parsing or a declared raw binary), with the instance identified by its `name` and the target profile pins; ELF metadata and declared format/size checks only — a board-provided manifest is deferred.
 - Artifact selection: no staleness detection — Deploy consumes the build owner's output as-is. The MVP applies the exactly-one rule per target and fails multi-artifact targets with `artifact.ambiguous`; multi-artifact selection through `betelgeuz.deploy.artifact` is scheduled for Phase 7 (Optimization).
@@ -766,9 +768,9 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Strategy model: deploy strategies are peers in a compile-time registry with declarative metadata (ID, role, config schema, error-code namespace, privilege class, and validation entry points). The user selects among implemented strategies; attach creation depends on SSH identity verification only, and target compatibility is checked afterward by the selected strategy. All strategies share the core's SSH session.
 - Linux userspace runtime: the MVP accepts structured foreground launches with an executable,
   argv, cwd, environment, and closed stdin; it performs ELF/ABI/interpreter and target mount/
-  permission preflight before activation. Systemd service mode is optional and requires a
-  pre-provisioned unit that passes capability checks. Free-form shell commands are not part of
-  the public contract.
+  permission preflight before activation. Foreground execution is the only run mode in the first
+  release; service-managed execution is deferred (see the deferred block). Free-form shell
+  commands are not part of the public contract.
 - Debug adapter: the VS Code frontend binds CodeLLDB (`vadimcn.vscode-lldb`) as its DAP integration and maps the core's debugger-agnostic configuration to a `lldb` launch configuration (`target create` plus `gdb-remote` over the core's port forward). CodeLLDB covers all three RSP flows — application `gdbserver`, firmware GDB stubs, and OpenOCD-based probes — and satisfies the selection criteria: permissive licensing, maintained releases, and source-path mapping (via `target.source-map` where needed). The core stays debugger-neutral; the Debug action appears only when the DAP integration is installed, and a board whose stub proves LLDB-incompatible would add a GDB-based adapter at the frontend layer with no core changes.
 
 - VS Code is the only frontend. The editor-neutral core and the Zed/Neovim adapter plans are retracted (maintainer readability decides the substrate); the core modules keep VS Code APIs out of their imports for testability, not for portability. A product CLI is not part of the vision: the service layer is callable from tests, and a CLI would only wrap `ssh`/`scp` for cases scripts already cover.
@@ -787,7 +789,8 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - More than one attach object per workspace. Trigger: a real multi-board parallel workflow after the one-attach MVP.
 - Which target-side software RSP providers exist per board profile (firmware GDB stub, RPMsg/OpenAMP debug service, vendor server, or OpenOCD-capable probe), and their compatibility with LLDB's RSP client. Trigger: onboarding each board profile to debug. Deployment support alone does not imply debugging support.
 - Team sharing of target profiles: whether a workspace-committed profile definition (without secrets) may merge with or override user-level `betelgeuz.profiles` entries. Trigger: multiple developers committing to one repository. The MVP keeps profiles user-level only.
-- A custom detached process launcher and a narrowly scoped target-side privilege helper. Trigger: a target that needs process survival beyond foreground/service modes, or a non-root image that cannot use the published sudo whitelist. Both remain behind their seams: process identity recording and the privilege runner.
+- Systemd service mode as a second run mode (`runMode: service` against a unit the user pre-provisions). Withdrawn from the first release because foreground execution already survives drops through PID reconciliation, the Tier 1 board set includes images with no service manager (BusyBox-class builds), and a full implementation doubles the application strategy's lifecycle surface for a development-loop use case that foreground already serves. Trigger: a user segment whose workflow needs what only a service manager provides — crash auto-restart, supervision across host sessions, or journal-persisted logs — on targets running a full-distribution image. Starting scope when triggered: manager and unit existence probe, templated `systemctl` start/stop/restart/status, and the service manager's log source; restart-policy and environment introspection stay deferred.
+- A custom detached process launcher and a narrowly scoped target-side privilege helper. Trigger: a target that needs process survival beyond foreground mode, or a non-root image that cannot use the published sudo whitelist. Both remain behind their seams: process identity recording and the privilege runner.
 - Additional small-core deploy strategies for vendor control mechanisms, such as mailbox-based control in the Rockchip family or vendor loaders like the Canaan K230's. Trigger: a board profile that needs small-core control through one of them. Each is a new strategy behind the common contract with its own configuration keys, error-code namespace, and target validation; the remoteproc strategy never emulates them. Until implemented, these boards are not Tier 1 and those strategies are not offered.
 - Dynamic strategy loading: third-party strategies as loadable modules or WASM components. Trigger: strategy demand beyond the core's own implementations. The registry metadata is the seam; the MVP registry is compile-time.
 - Serial debug: GDB's native serial RSP would share the console line with shell traffic; the line-exclusivity handoff design is deferred. Trigger: debug demand on serial-only boards.

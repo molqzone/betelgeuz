@@ -197,13 +197,6 @@ export class SshApplicationStrategy implements DeployStrategy {
         detail: "an application run is already active",
       });
     }
-    if (settings.runMode === "service") {
-      throw new BetelgeuzError("runtime.service-manager-missing", {
-        detail: settings.serviceUnit === undefined
-          ? "service mode requires a pre-provisioned service unit"
-          : `systemd service ${settings.serviceUnit} is not available in Phase 1`,
-      });
-    }
     const releaseMutation = this.mutation.enter();
     try {
     const request = this.launchRequest(settings);
@@ -817,13 +810,6 @@ export function parseApplicationConfiguration(value: unknown): ApplicationConfig
   const cwd = optionalString(record.cwd, "cwd");
   const executable = optionalString(record.executable, "executable");
   const fileMode = optionalString(record.fileMode, "fileMode");
-  const serviceUnit = optionalString(record.serviceUnit, "serviceUnit");
-  const runMode = optionalString(record.runMode, "runMode");
-  if (runMode !== undefined && runMode !== "foreground" && runMode !== "service") {
-    throw new BetelgeuzError("config.invalid", {
-      detail: "runMode must be foreground or service",
-    });
-  }
   const stopGraceMs = record.stopGraceMs;
   if (
     stopGraceMs !== undefined &&
@@ -840,8 +826,6 @@ export function parseApplicationConfiguration(value: unknown): ApplicationConfig
     ...(executable === undefined ? {} : { executable }),
     ...(fileMode === undefined ? {} : { fileMode }),
     remotePath,
-    ...(runMode === undefined ? {} : { runMode }),
-    ...(serviceUnit === undefined ? {} : { serviceUnit }),
     ...(stopGraceMs === undefined ? {} : { stopGraceMs: stopGraceMs as number }),
   };
 }
