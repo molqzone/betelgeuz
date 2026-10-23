@@ -52,7 +52,9 @@ export type RemediationId =
   | "installCmakeTools"
   | "installGdbserver"
   | "inspectTrace"
-  | "showLog";
+  | "showLog"
+  | "runExplicitCleanup"
+  | "useForegroundMode";
 
 export interface ErrorDef {
   readonly phase: CatalogPhase;
@@ -250,13 +252,13 @@ export const COMMON_ERRORS = {
   "runtime.service-manager-missing": {
     phase: "lifecycle",
     retriable: false,
-    remediation: "selectSupportedStrategy",
+    remediation: "useForegroundMode",
     summary: "The configured service mode has no supported service manager or unit.",
   },
   "runtime.orphan-risk": {
     phase: "lifecycle",
     retriable: false,
-    remediation: "selectSupportedStrategy",
+    remediation: "runExplicitCleanup",
     summary: "The foreground process cannot be proven safe to clean up after disconnect.",
   },
   "internal.unexpected": {

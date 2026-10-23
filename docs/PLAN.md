@@ -161,12 +161,12 @@ Endpoint resolution alone is not sufficient for identifying multiple boards. A s
 ### Linux userspace runtime contract
 
 The SSH application strategy needs a target runtime contract in addition to an SSH connection.
-The target probe records the kernel machine and endianness, ELF class and ABI expectations,
-libc family/version when discoverable, dynamic loader path, writable filesystem status, and the
-available process controls. An ELF artifact is accepted only when its machine, class,
+The target probe records the kernel machine and endianness, ELF class and interpreter, and the
+destination's writable, free-space, and `noexec` state; libc family/version, the dynamic loader
+path, and the available process controls are not read. An ELF artifact is accepted only when its machine, class,
 endianness, ABI and interpreter are compatible with that probe; a raw binary must declare its
-format and architecture in the workspace configuration. The probe may report unknown libc
-details, but an explicitly incompatible interpreter or ABI is a hard failure. This avoids
+format and architecture in the workspace configuration. The probe reports libc
+details as unknown, but an explicitly incompatible interpreter or ABI is a hard failure. This avoids
 mistaking a successful upload for a runnable program on a musl/glibc or 32/64-bit mismatch.
 For dynamically linked ELF files, `DT_NEEDED` entries may be compared with the target's known
 loader/library inventory when available; this check is best effort and must never execute the
@@ -309,7 +309,7 @@ The core provides a shared operation coordinator for artifact handoff, identity 
 
 Strategies are registered capabilities, not hardcoded command branches. Each implemented strategy registers its ID, role, configuration schema, error-code namespace, privilege class, and validation entry points. The user selects a strategy from those implemented by the installed Betelgeuz version; binding depends only on successful SSH identity verification and does not require a strategy probe. The selected strategy probes its own interfaces before enabling or executing operations and reports incompatibility with a concrete remedy. This is operational validation, not board-wide discovery or automatic strategy selection. All strategies share the core's SSH session and transport machinery; a strategy never opens its own connection. In the MVP the registry is compile-time — adding a strategy means adding one module and its metadata to the core — while third-party dynamic strategy loading is deferred until there is demand.
 
-The shared method names do not imply the same target semantics. In `linux.ssh-app`, `start` launches a Linux userspace process and `inspect` checks that process or its service. In `linux.remoteproc`, `start` writes the remoteproc control interface for a small core and `inspect` reads the remoteproc state and firmware metadata. Each strategy owns this distinction.
+The shared method names do not imply the same target semantics. In `linux.ssh-app`, `start` launches a Linux userspace process and `inspect` checks that process. In `linux.remoteproc`, `start` writes the remoteproc control interface for a small core and `inspect` reads the remoteproc state and firmware metadata. Each strategy owns this distinction.
 
 The common Betelgeuz workflow is `Deploy`, `Start`, `Stop`, and `Restart` against the active attach object. `Deploy` consumes the already-built artifact for the selected target and never starts an implicit build. The active strategy supplies the concrete meaning and implementation of deployment and lifecycle actions. The command layer does not need to know whether the selected CMake artifact is a Linux application or small-core firmware.
 
@@ -368,7 +368,7 @@ The initial catalog:
 | `rproc.state-timeout` | lifecycle | state wait timed out; carries last observed state | inspect trace output | yes |
 | `debug.gdbserver-missing` | debug | `gdbserver` absent on the target | install `gdbserver` (or copy a transient static one) | no |
 | `runtime.service-manager-missing` | lifecycle | configured service mode has no supported systemd unit or manager | use foreground mode or provision the unit | no |
-| `runtime.orphan-risk` | lifecycle | foreground disconnect policy cannot prove process termination | run an explicit cleanup | no |
+| `runtime.orphan-risk` | lifecycle | foreground disconnect policy cannot prove process termination | stop the target to clean up the run | no |
 | `internal.unexpected` | any | unexpected failure; carries phase and cause | show log | no |
 
 Error presentation follows Remote-SSH semantics that users already know: failures are labelled by phase (resolve profile, connect, authenticate, verify identity, deploy, lifecycle, debug — mirroring Remote-SSH's resolve/connect/authenticate/start-server labels); retriable failures show bounded reconnect attempts and stop on explicit disconnect; every surfaced error offers a path to the log with the raw transport output; host-key prompts show the fingerprint and are never auto-accepted. The classic SSH failure patterns users recognize from Remote-SSH output — permission denied, connection refused or timed out, host key verification failed, too many authentication failures — map onto the `ssh.*` codes above; because the transport is `ssh2`, that mapping lives at the transport boundary over library error events instead of parsing `ssh(1)` output.
@@ -392,7 +392,7 @@ Debug lifecycle:
 3. Start the temporary target endpoint or external debug server.
 4. Have the core create the SSH forward or local transport and manage its cleanup, while the frontend launches the host-side DAP/GDB session.
 5. On debugger exit, explicit stop, SSH loss, or frontend/core shutdown, close the local session, remove forwarding, and terminate the temporary target endpoint.
-6. Do not stop a systemd application or `remoteproc` firmware merely because the debug endpoint ended unless the selected provider explicitly owns that target lifecycle.
+6. Do not stop a running application or `remoteproc` firmware merely because the debug endpoint ended unless the selected provider explicitly owns that target lifecycle.
 
 ### The application strategy: `linux.ssh-app`
 
@@ -443,7 +443,7 @@ The global command palette exposes generic workspace and active-attach operation
 - `Betelgeuz: Disconnect`
 - `Betelgeuz: Inspect Attach`
 
-The target-selection command resolves the workspace's Betelgeuz SSH profile and then performs the secure identity and descriptor handshake. If the workspace has no strategy, it offers the strategies implemented in this Betelgeuz version, grouped by role; the choice is user-driven and does not depend on target-interface detection. It then creates the attach after identity verification. The selected strategy checks its own target requirements and reports incompatibility while preserving the attach. It never scans the network; the saved profile is the only source of a target. Deploy and lifecycle commands act on the workspace's active attach object and route through its selected strategy; they never name a specific chip resource or strategy. Deploy uses the selected target's existing CMake artifact and does not rebuild. The Betelgeuz view shows the selected strategy, run mode, connection state, and available logs/status. Attach-dependent operations are disabled when strategy validation fails. Debug is shown only when a compatible debug integration is configured. Strategy-specific commands such as “Start Real-Time Core” or “Start remoteproc0” are not registered.
+The target-selection command resolves the workspace's Betelgeuz SSH profile and then performs the secure identity and descriptor handshake. If the workspace has no strategy, it offers the strategies implemented in this Betelgeuz version, grouped by role; the choice is user-driven and does not depend on target-interface detection. It then creates the attach after identity verification. The selected strategy checks its own target requirements and reports incompatibility while preserving the attach. It never scans the network; the saved profile is the only source of a target. Deploy and lifecycle commands act on the workspace's active attach object and route through its selected strategy; they never name a specific chip resource or strategy. Deploy uses the selected target's existing CMake artifact and does not rebuild. The Betelgeuz view shows the selected strategy, connection state, and available logs/status. Attach-dependent operations are disabled when strategy validation fails. Debug is shown only when a compatible debug integration is configured. Strategy-specific commands such as “Start Real-Time Core” or “Start remoteproc0” are not registered.
 
 ### Status bar
 
@@ -451,7 +451,7 @@ Show a compact state such as `Betelgeuz: Disconnected`, `Betelgeuz: Connecting`,
 
 ### Output
 
-Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact resolution, deployment, foreground stdout/stderr, service logs, process lifecycle, debug session setup, and strategy logs. User-facing errors should identify the failed phase and offer an actionable remediation, such as checking the SSH profile, SSH service, host key, permissions, artifact path, firmware path, debugger executable, symbols, or selected strategy interface.
+Use a dedicated `Betelgeuz` OutputChannel for attach state, SSH, build artifact resolution, deployment, foreground stdout/stderr, process lifecycle, debug session setup, and strategy logs. User-facing errors should identify the failed phase and offer an actionable remediation, such as checking the SSH profile, SSH service, host key, permissions, artifact path, firmware path, debugger executable, symbols, or selected strategy interface.
 
 ## 8. Implementation Phases
 
@@ -662,7 +662,7 @@ The debug controller owns target-endpoint and forward lifecycle; the VS Code sur
   structured argv/environment/cwd handling, permission and noexec checks, and retention limits.
 - Strategy-specific runtime parsing and lifecycle state, including Linux `remoteproc` sysfs handling.
 - Privilege/error handling and attach identity validation.
-- Foreground process exit, service state, log retrieval, and state reconciliation after reconnect.
+- Foreground process exit, log retrieval, and state reconciliation after reconnect.
 - Debug-provider selection, host-side launch configuration, target endpoint startup, RSP forwarding, and cleanup.
 
 ### Integration tests
@@ -679,7 +679,6 @@ The debug controller owns target-endpoint and forward lifecycle; the VS Code sur
 - Deploy without a valid existing artifact must fail clearly and must not invoke any CMake build command.
 - Foreground process stdout/stderr and exit status are reported; after disconnect, process state is re-queried before the UI reports it.
 - `Stop` terminates the process group: `SIGTERM` first, `SIGKILL` after the grace period, and the reported outcome names the terminating signal. Fetch recent output serves the ring buffer after the process has ended or the connection dropped.
-- Service-managed applications remain controllable after the core disconnects, when the configured service manager is available.
 - A foreground launch with spaces, shell metacharacters, and environment values reaches the exact
   structured argv/environment requested; no shell injection or argument splitting occurs.
 - An incompatible ELF interpreter/ABI, read-only or `noexec` destination, insufficient space, or
@@ -723,7 +722,7 @@ The debug controller owns target-endpoint and forward lifecycle; the VS Code sur
 - Never treat a reachable IP as the configured attach target until identity checks pass.
 - Never trust a hardware descriptor before SSH host-key verification.
 - Do not replace a configured identity pin with a newly observed value without explicit user action.
-- Do not use broad process-name matching as the default stop or status mechanism; track the foreground channel, service unit, or an explicit strategy-owned process identity.
+- Do not use broad process-name matching as the default stop or status mechanism; track the foreground channel or an explicit strategy-owned process identity.
 - Do not overwrite the active firmware before the staged image is present and validated.
 - Require an explicit recovery path when a firmware update can leave a real-time core stopped.
 - Keep debug endpoints on the target loopback interface or SSH stdio/forwarding; do not expose GDB ports publicly by default.
@@ -794,5 +793,6 @@ Work items — schemas, configuration key lists, error catalogs — are Phase 0 
 - Additional small-core deploy strategies for vendor control mechanisms, such as mailbox-based control in the Rockchip family or vendor loaders like the Canaan K230's. Trigger: a board profile that needs small-core control through one of them. Each is a new strategy behind the common contract with its own configuration keys, error-code namespace, and target validation; the remoteproc strategy never emulates them. Until implemented, these boards are not Tier 1 and those strategies are not offered.
 - Dynamic strategy loading: third-party strategies as loadable modules or WASM components. Trigger: strategy demand beyond the core's own implementations. The registry metadata is the seam; the MVP registry is compile-time.
 - Serial debug: GDB's native serial RSP would share the console line with shell traffic; the line-exclusivity handoff design is deferred. Trigger: debug demand on serial-only boards.
+- A `dev`/`main` branch split. Not adopted while the repository is pre-release and single-maintainer: `main` has never carried a release, CI already runs on every push and pull request across branches (`.github/workflows/ci.yml`), and the split's value — `main` always shippable — has nothing to protect before the first publish. Trigger: the first VS Code Marketplace publish, a second contributor, or a hotfix against a published version. Shape when triggered: `dev` takes the daily commits, `main` accepts only merges from `dev` plus hotfixes, VSIX packaging and `v*` tags happen on `main`, and `main` gains branch protection requiring a pull request with green checks.
 - Multi-file deploy: deploying an application together with shared libraries or configuration files as one operation. Trigger: a real application workspace that needs several files deployed together. A manifest-style deploy contract would be designed then.
 - Publishing protocol JSON Schema artifacts. Trigger: a third-party frontend or the published `betelgeuz-protocol` facade consumes them. Until then the schemas are build artifacts, not repository content.

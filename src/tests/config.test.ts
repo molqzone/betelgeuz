@@ -98,6 +98,23 @@ describe("settings shapes", () => {
     ]);
   });
 
+  it("contributes no setting outside the fixed keys and the declared patterns", () => {
+    const manifest = JSON.parse(
+      readFileSync("package.json", "utf8")
+    ) as {
+      contributes: {
+        configuration: { properties: Record<string, unknown> };
+      };
+    };
+    const properties = Object.keys(manifest.contributes.configuration.properties);
+    const orphans = properties.filter(
+      (key) =>
+        !(FIXED_CONFIG_KEYS as readonly string[]).includes(key) &&
+        !CONFIG_KEY_PATTERNS.some((prefix) => key.startsWith(prefix))
+    );
+    expect(orphans).toEqual([]);
+  });
+
   it("builds strategy keys from the full strategy ID", () => {
     expect(strategyKey("linux.remoteproc", "instance")).toBe(
       "betelgeuz.attach.linux.remoteproc.instance"

@@ -144,6 +144,13 @@ const ACTIONS: Record<RemediationId, Remediation> = {
   showLog: {
     advice: "Open the output for the raw transport detail.",
   },
+  runExplicitCleanup: {
+    advice:
+      "Stop the target to clean up the recorded process group; when the run's identity was lost, stop it on the target explicitly.",
+  },
+  useForegroundMode: {
+    advice: "Use foreground mode, or provision a service unit the target's service manager can run.",
+  },
 };
 
 /**
